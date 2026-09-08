@@ -3,7 +3,8 @@
   "builds": [
     { "src": "api-plan.js", "use": "@vercel/node" },
     { "src": "index.html", "use": "@vercel/static" },
-    { "src": "viagem.html", "use": "@vercel/static" }
+    { "src": "viagem.html", "use": "@vercel/static" },
+    { "src": "googlece076f25e9969ea4.html", "use": "@vercel/static" }
   ],
   "routes": [
     { "src": "/api/plan", "dest": "/api-plan.js" },
