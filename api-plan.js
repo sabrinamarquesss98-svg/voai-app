@@ -78,6 +78,12 @@ const cities = {
   "seul": {name:"Seul",country:"Coreia do Sul",iata:"ICN",tags:["cidade","internacional","asia"]},
   "bangkok": {name:"Bangkok",country:"Tailândia",iata:"BKK",tags:["cidade","internacional","asia"]},
   "singapura": {name:"Singapura",country:"Singapura",iata:"SIN",tags:["cidade","internacional","asia"]},
+  "sao jose": {name:"San José",country:"Costa Rica",iata:"SJO",tags:["cidade","internacional","america-central"]},
+  "cidade do panama": {name:"Cidade do Panamá",country:"Panamá",iata:"PTY",tags:["cidade","internacional","america-central"]},
+  "guatemala": {name:"Cidade da Guatemala",country:"Guatemala",iata:"GUA",tags:["cidade","internacional","america-central"]},
+  "vancouver": {name:"Vancouver",country:"Canadá",iata:"YVR",tags:["cidade","internacional"]},
+  "los angeles": {name:"Los Angeles",country:"Estados Unidos",iata:"LAX",tags:["cidade","internacional"]},
+  "mexico city": {name:"Cidade do México",country:"México",iata:"MEX",tags:["cidade","internacional"]},
   "sydney": {name:"Sydney",country:"Austrália",iata:"SYD",tags:["cidade","internacional"]},
   "bali": {name:"Bali",country:"Indonésia",iata:"DPS",tags:["praia","internacional","asia"]}
 };
@@ -88,51 +94,119 @@ Object.assign(aliases,{"cgr":"CGR","gru":"GRU","g3r":"GRU","bsb":"BSB","gig":"GI
 const beachBrazil=["maceio","recife","salvador","fortaleza","natal","joao pessoa","porto seguro","florianopolis","vitoria","aracaju","sao luis","rio de janeiro","fernando de noronha"];
 const beachInternational=["punta cana","cartagena","cancun","miami","barcelona","bali","cidade do cabo"];
 const broadBrazil=["sao paulo","rio de janeiro","brasilia","belo horizonte","curitiba","porto alegre","goiania","salvador","recife","fortaleza","florianopolis","maceio","natal","joao pessoa","foz do iguacu","manaus","belem"];
+const regionCandidates={
+  europe:["lisboa","porto","madrid","barcelona","paris","londres","bruxelas","amsterdam","roma","milao","berlim","viena","budapeste","praga","zurique","atenas","dublin","copenhague","estocolmo","oslo","istambul"],
+  northAmerica:["nova york","orlando","miami","toronto","vancouver","los angeles","mexico city"],
+  centralAmerica:["sao jose","cidade do panama","guatemala"],
+  southAmerica:["buenos aires","montevideu","santiago","lima","cartagena"],
+  asia:["toquio","seul","bangkok","singapura","bali","dubai"],
+  africa:["cairo","cidade do cabo"],
+  oceania:["sydney"]
+};
+
+const regionLabels={europe:"Europa",northAmerica:"América do Norte",centralAmerica:"América Central",southAmerica:"América do Sul",asia:"Ásia",africa:"África",oceania:"Oceania"};
+
 const broadInternational=["buenos aires","montevideu","santiago","lima","lisboa","porto","madrid","barcelona","paris","londres","bruxelas","amsterdam","roma","milao","berlim","viena","budapeste","praga","zurique","atenas","istambul","dubai","nova york","orlando","miami","toronto","cairo","cidade do cabo","toquio","bangkok","singapura","sydney","bali"];
 
 function norm(s){return String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");}
 function uniqueById(arr){const seen=new Set();return arr.filter(x=>x&&x.id&&!seen.has(x.id)&&(seen.add(x.id),true));}
 
+function parseMoney(text){
+  const s=norm(text);
+  const patterns=[
+    /r\$\s*([0-9]{1,3}(?:[.][0-9]{3})+(?:,[0-9]+)?)/i,
+    /r\$\s*([0-9]+(?:,[0-9]+)?)/i,
+    /(?:tenho|orçamento|orcamento|budget|até|ate|por|gastar|gastando|com)\s*(?:de\s*)?([0-9]{1,3}(?:[.][0-9]{3})+(?:,[0-9]+)?)\s*(?:reais|mil)?/i,
+    /([0-9]+(?:[.,][0-9]+)?)\s*mil\s*(?:reais)?/i
+  ];
+  for(const re of patterns){
+    const m=s.match(re); if(!m) continue;
+    let raw=m[1];
+    if(/mil/.test(m[0])) return Number(raw.replace(',','.'))*1000;
+    if(raw.includes('.') && raw.includes(',')) raw=raw.replace(/\./g,'').replace(',','.');
+    else if(raw.includes('.') && /\.[0-9]{3}$/.test(raw)) raw=raw.replace(/\./g,'');
+    else raw=raw.replace(',','.');
+    const n=Number(raw); if(Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
 function parseRequest(text,originInput,peopleInput){
-  const original=String(text||""); const s=norm(original);
-  const budgetMatch=s.match(/r\$\s*([\d\.\,]+)/i);
-  const budget=budgetMatch?Number(budgetMatch[1].replace(/\./g,"").replace(",",".")):null;
-  const dayMatch=s.match(/(\d+)\s*dias?/); const days=dayMatch?Math.min(30,Math.max(2,Number(dayMatch[1]))):7;
+  const original=String(text||''); const s=norm(original);
+  const budget=parseMoney(original);
+  const dayMatch=s.match(/(?:por|durante|de)\s*(\d+)\s*dias?|\b(\d+)\s*dias?\b/);
+  const days=Math.min(30,Math.max(2,Number(dayMatch?.[1]||dayMatch?.[2]||7)));
   const people=Math.max(1,Math.min(8,Number(peopleInput)||2));
-  const months=["janeiro","fevereiro","marco","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
+  const months=['janeiro','fevereiro','marco','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
   let month=null;months.forEach((m,i)=>{if(s.includes(m))month=i+1});
-  const now=new Date();if(!month)month=(now.getMonth()+2)>12?1:now.getMonth()+2;const year=month<=now.getMonth()+1?now.getFullYear()+1:now.getFullYear();
-  const originRaw=norm(originInput);let originIata=aliases[originRaw]||(originRaw.match(/\(([a-z]{3})\)/)?.[1]||"").toUpperCase();
+  const now=new Date();
+  if(!month) month=(now.getMonth()+2)>12?1:now.getMonth()+2;
+  const year=month<=now.getMonth()+1?now.getFullYear()+1:now.getFullYear();
+
+  const originRaw=norm(originInput); let originIata=aliases[originRaw]||(originRaw.match(/\(([a-z]{3})\)/)?.[1]||'').toUpperCase();
   if(!/^[A-Z]{3}$/.test(originIata)){
+    const originPatterns=['moro em','moro no','moro na','moramos em','moramos no','moramos na','somos de','sou de','vivemos em','vivemos no','vivemos na','saindo de','saindo do','saindo da','partindo de','partindo do','partindo da'];
     for(const [name,iata] of Object.entries(aliases)){
-      if(name.length>3&&(s.includes(`moro em ${name}`)||s.includes(`moro no ${name}`)||s.includes(`moramos em ${name}`)||s.includes(`moramos no ${name}`)||s.includes(`somos de ${name}`)||s.includes(`vivemos em ${name}`)||s.includes(`vivemos no ${name}`)||s.includes(`saindo de ${name}`)||s.includes(`saindo do ${name}`)||s.includes(`partindo de ${name}`))){originIata=iata;break;}
+      if(name.length>3 && originPatterns.some(prefix=>s.includes(`${prefix} ${name}`))){originIata=iata;break;}
     }
   }
-  if(!/^[A-Z]{3}$/.test(originIata))originIata="CGR";
+  if(!/^[A-Z]{3}$/.test(originIata)) originIata='CGR';
+
   const beach=/praia|mar|litoral|beach/.test(s);
-  const international=/internacional|fora do brasil|fora do pais|exterior|outro pais|outros paises|europa|asia|america do sul|caribe|mundo/.test(s);
-  const europe=/europa|europeu|europeia|europeia/.test(s);
+  const train=/\btrem\b|trens|ferrovia|ferroviario|ferroviária|rail|comboio/.test(s);
+  const international=/internacional|fora do brasil|fora do pais|exterior|outro pais|outros paises|europa|asia|america do sul|america do norte|america central|caribe|africa|oceania|mundo|italia|franca|espanha|portugal|alemanha|belgica|paises baixos|reino unido|canada|estados unidos|mexico/.test(s);
+  const europe=/europa|europeu|europeia/.test(s);
   const brazilOnly=/somente brasil|so brasil|apenas brasil|no brasil|brasil apenas/.test(s);
+  let region=null;
+  if(europe) region='europe';
+  else if(/america do norte|america norte|norte americana|norte-americana/.test(s)) region='northAmerica';
+  else if(/america central|america central|central america/.test(s)) region='centralAmerica';
+  else if(/america do sul|america sul|sul americana|sul-americana/.test(s)) region='southAmerica';
+  else if(/\basia\b|asiatico|asiatica/.test(s)) region='asia';
+  else if(/\bafrica\b|africano|africana/.test(s)) region='africa';
+  else if(/\boceania\b|oceanica|oceanico/.test(s)) region='oceania';
+  else if(brazilOnly) region='brazil';
+  const countryRegionHints={
+    northAmerica:/estados unidos|eua|usa|canada|canadá|mexico|méxico/,
+    centralAmerica:/costa rica|panama|panamá|guatemala|belize|honduras|el salvador|nicaragua/,
+    southAmerica:/argentina|uruguai|uruguay|chile|peru|colombia|colômbia|bolivia|bolívia|equador|ecuador|paraguai|paraguay/,
+    asia:/japao|japão|coreia do sul|china|tailandia|tailândia|indonesia|indonésia|singapura|india|índia|vietna|vietnã|malasia|malásia/,
+    africa:/egito|marrocos|africa do sul|áfrica do sul|tanzania|tanzânia|quenia|quênia/,
+    oceania:/australia|austrália|nova zelandia|nova zelândia|fiji/
+  };
+  for(const [r,re] of Object.entries(countryRegionHints)){ if(re.test(s)){ region=r; break; } }
+  const countryHints={
+    'italia':['roma','florenca','pisa','milao','veneza','napoles'],
+    'franca':['paris'], 'espanha':['madrid','barcelona'], 'portugal':['lisboa','porto'],
+    'paises baixos':['amsterdam'], 'belgica':['bruxelas'], 'alemanha':['berlim','munique'],
+    'reino unido':['londres'], 'grecia':['atenas'], 'austria':['viena'], 'hungria':['budapeste'],
+    'republica tcheca':['praga'], 'suica':['zurique']
+  };
+  let country=null,countryCandidates=[];
+  for(const [countryName,keys] of Object.entries(countryHints)){
+    if(s.includes(countryName)){
+      country=countryName;
+      countryCandidates=keys.map(k=>cities[k]).filter(Boolean).map(c=>({...c,id:c.iata}));
+      break;
+    }
+  }
   const explicit=[];
   for(const [key,c] of Object.entries(cities)) if(s.includes(norm(c.name))||s.includes(key)) explicit.push({...c,id:c.iata});
   const explicitFinal=uniqueById(explicit).filter(c=>c.iata!==originIata);
-  // Só consideramos multi-cidade quando o usuário realmente citou duas ou mais cidades.
-  // País/região (ex.: Portugal/Europa) NÃO deve virar automaticamente um roteiro de várias cidades.
   const multiCityClean=explicitFinal.length>=2 ? explicitFinal.slice(0,6) : [];
-  const countryHints={'italia':['roma','florenca','pisa','milao'],'franca':['paris'],'espanha':['madrid','barcelona'],'portugal':['lisboa','porto'],'paises baixos':['amsterdam'],'belgica':['bruxelas'],'alemanha':['berlim','munique'],'reino unido':['londres']};
-  let countryCandidates=[];
-  for(const [country,keys] of Object.entries(countryHints)){
-    if(s.includes(country)){ countryCandidates=keys.map(k=>cities[k]).filter(Boolean).map(c=>({...c,id:c.iata})); break; }
-  }
-  return {budget,days,people,month,year,originIata,beach,international,europe,brazilOnly,explicit:explicitFinal,multiCity:multiCityClean,countryCandidates};
+  if(country && ['italia','franca','espanha','portugal','paises baixos','belgica','alemanha','reino unido','grecia','austria','hungria','republica tcheca','suica'].includes(country)) region='europe';
+  const regionCandidatesResolved=region&&regionCandidates[region]?regionCandidates[region].map(k=>cities[k]).filter(Boolean).map(c=>({...c,id:c.iata})):[];
+  const surprise=/nao sei para onde|não sei para onde|qualquer lugar|qualquer destino|me surpreenda|sem destino/.test(s);
+  const priceQuestion=/quanto custa|qual o preco|qual o preço|quanto vou gastar|quanto sai|valor da viagem|custa quanto/.test(s);
+  return {budget,days,people,month,year,originIata,beach,train,international,europe,brazilOnly,region,regionLabel:regionLabels[region]||null,country,countryCandidates,regionCandidates:regionCandidatesResolved,explicit:explicitFinal,multiCity:multiCityClean,surprise,priceQuestion};
 }
 
-
 async function geminiUnderstand(text,originInput,peopleInput){
-  if(!(process.env.GEMINI_API_KEY || process.env.GEMINI_KEY)) return null;
-  const prompt=`Você é o cérebro de uma agência de viagens chamada VOAÍ. Entenda o pedido abaixo e devolva SOMENTE JSON válido, sem markdown. Não invente preços. Extraia preferências e cidades mencionadas, mantendo a ordem. Se o usuário não souber o destino, deixe destinations vazio. Campos: region ("europe", "brazil", "world" ou null), budget (número ou null), days (número ou 7), month (1-12 ou null), year (número ou null), people (1-8), origin (texto ou null), destinations (array de textos), beach (boolean), international (boolean), brazilOnly (boolean), flexibleDates (boolean), preferences (array de textos), multiCity (boolean). Se o pedido disser Europa, use region="europe" e não invente uma cidade. Pedido: ${JSON.stringify(String(text||''))}. Origem informada separadamente: ${JSON.stringify(String(originInput||''))}. Pessoas informadas separadamente: ${JSON.stringify(String(peopleInput||''))}.`;
+  const GEMINI_KEY=process.env.GEMINI_API_KEY||process.env.GEMINI_KEY;
+  if(!GEMINI_KEY) return null;
+  const prompt=`Você é o cérebro de uma agência de viagens chamada VOAÍ. Entenda o pedido abaixo e devolva SOMENTE JSON válido, sem markdown. Não invente preços. Extraia preferências e cidades mencionadas, mantendo a ordem. Se o usuário não souber o destino, deixe destinations vazio. Campos: region ("europe", "brazil", "world" ou null), budget (número ou null), days (número ou 7), month (1-12 ou null), year (número ou null), people (1-8), origin (texto ou null), destinations (array de textos), beach (boolean), international (boolean), brazilOnly (boolean), flexibleDates (boolean), preferences (array de textos), multiCity (boolean). Se o pedido disser Europa, use region="europe" e não invente uma cidade. Se citar apenas um país, mantenha o país e não transforme automaticamente em multicidades. Se pedir trem sem citar cidades, marque preferences=["trem"] e não invente cidades, a menos que um roteiro óbvio seja explicitamente pedido. Pedido: ${JSON.stringify(String(text||''))}. Origem informada separadamente: ${JSON.stringify(String(originInput||''))}. Pessoas informadas separadamente: ${JSON.stringify(String(peopleInput||''))}.`;
   try{
-    const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${encodeURIComponent((process.env.GEMINI_API_KEY || process.env.GEMINI_KEY))}`;
+    const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
     const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0,responseMimeType:'application/json'}})});
     const data=await r.json();
     if(!r.ok) return null;
@@ -153,7 +227,7 @@ async function applyAI(req,ai){
   if(typeof ai.international==='boolean') req.international=ai.international;
   if(req.europe) req.region='europe';
   if(typeof ai.brazilOnly==='boolean') req.brazilOnly=ai.brazilOnly;
-  if(ai.region==='europe'||ai.region==='brazil'||ai.region==='world') req.region=ai.region;
+  if(['europe','brazil','world','northAmerica','centralAmerica','southAmerica','asia','africa','oceania'].includes(ai.region)) req.region=ai.region;
   if(typeof ai.origin==='string' && ai.origin.trim()){
     const n=norm(ai.origin);
     const known=Object.values(cities).find(c=>norm(c.name)===n);
@@ -170,6 +244,11 @@ async function applyAI(req,ai){
   // A IA só pode transformar as cidades em roteiro multi-cidade quando ela realmente marcou multiCity=true.
   // Isso evita que um pedido simples como “Portugal em outubro” vire automaticamente Lisboa → Porto.
   if(resolved.length && ai.multiCity===true){req.multiCity=uniqueById(resolved).slice(0,6);req.explicit=req.multiCity;}
+  if(Array.isArray(ai.preferences)) {
+    const prefs=ai.preferences.map(x=>norm(x));
+    if(prefs.some(x=>/trem|ferrovia|rail|comboio/.test(x))) req.train=true;
+  }
+  if(ai.region==='europe') req.europe=true;
   req.aiEnabled=true;
   return req;
 }
@@ -294,6 +373,34 @@ async function dealsPlan(body){
   return {origin:origin==="ALL"?"Principais aeroportos do Brasil":(origins[origin]||origin),originIata:origin,mode,results:deals.slice(0,12)};
 }
 
+
+function demoDeals(originIata, tripLength, achadinhos=false){
+  const originNames={GRU:"São Paulo",GIG:"Rio de Janeiro",BSB:"Brasília",CGR:"Campo Grande",REC:"Recife",SSA:"Salvador",FOR:"Fortaleza",POA:"Porto Alegre",CWB:"Curitiba",FLN:"Florianópolis"};
+  const pool=[
+    {destination:"Buenos Aires",country:"Argentina",price:1480,discount:28,startDate:"2026-10-05",endDate:"2026-10-12",iata:"EZE",tags:"América do Sul"},
+    {destination:"Lisboa",country:"Portugal",price:3250,discount:24,startDate:"2026-10-19",endDate:"2026-10-27",iata:"LIS",tags:"Europa"},
+    {destination:"Santiago",country:"Chile",price:1690,discount:22,startDate:"2026-10-12",endDate:"2026-10-19",iata:"SCL",tags:"América do Sul"},
+    {destination:"Cancún",country:"México",price:2380,discount:31,startDate:"2026-11-03",endDate:"2026-11-10",iata:"CUN",tags:"América do Norte"},
+    {destination:"Paris",country:"França",price:3490,discount:21,startDate:"2026-10-05",endDate:"2026-10-13",iata:"CDG",tags:"Europa"},
+    {destination:"Tóquio",country:"Japão",price:4980,discount:19,startDate:"2026-11-10",endDate:"2026-11-18",iata:"NRT",tags:"Ásia"},
+    {destination:"Punta Cana",country:"República Dominicana",price:2490,discount:27,startDate:"2026-10-19",endDate:"2026-10-26",iata:"PUJ",tags:"Caribe"},
+    {destination:"Cidade do Cabo",country:"África do Sul",price:3990,discount:18,startDate:"2026-11-02",endDate:"2026-11-10",iata:"CPT",tags:"África"}
+  ];
+  const origin=String(originIata||"GRU").toUpperCase();
+  const multiplier={CGR:1.12,GIG:1.02,BSB:1.05,GRU:1,REC:1.08,SSA:1.08,FOR:1.10,POA:1.08,CWB:1.06,FLN:1.08}[origin]||1.12;
+  return pool.map((d,i)=>{
+    const price=Math.round(d.price*multiplier);
+    const hotel=achadinhos?Math.round([1350,1900,1450,1750,2050,2500,1800,2200][i]*multiplier):null;
+    const flightLink=`https://www.google.com/travel/flights?hl=pt-BR&curr=BRL&q=${encodeURIComponent(`${origin} ${d.iata} ${d.startDate}`)}`;
+    const hotelLink=`https://www.google.com/travel/search?q=${encodeURIComponent(`hotéis ${d.destination}`)}`;
+    return {destination:d.destination,country:d.country,price,discount:d.discount,startDate:d.startDate,endDate:d.endDate,flightLink,airline:"Companhia aérea (simulação)",stops:i%3===0?0:1,duration:null,thumbnail:null,description:`Oferta ilustrativa de ${d.tags} enquanto a pesquisa ao vivo estiver indisponível.`,originIata:origin,deal:true,demo:true,hotelName:achadinhos?`Hotel bem avaliado em ${d.destination}`:null,rating:achadinhos?4.5:null,hotelLink:achadinhos?hotelLink:null,totalWithHotel:achadinhos?price+hotel:null};
+  }).sort((a,b)=>b.discount-a.discount).slice(0,8);
+}
+
+function demoExplore(originIata){
+  return demoDeals(originIata,"5,10",false).map((x,i)=>({destination:x.destination,country:x.country,flight:x.price,checkin:x.startDate,checkout:x.endDate,flightLink:x.flightLink,demo:true,currency:"BRL",carrier:x.airline}));
+}
+
 function daysBetween(a,b){return Math.max(1,Math.round((new Date(b)-new Date(a))/86400000));}
 function slugCity(name){return String(name||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");}
 function omioLink(from,to){return `https://www.omio.com/trains/${slugCity(from)}/${slugCity(to)}`;}
@@ -339,19 +446,68 @@ async function multiCityPlan(req,dt,citiesReq){
     demo:false,currency:'BRL'
   };
 }
-function demo(req){const base=(req.explicit.length?req.explicit:broadBrazil.map(k=>cities[k])).slice(0,4);return base.map((d,i)=>({destination:d.name,country:d.country,checkin:dateISO(req.year,req.month,[3,10,17,24][i]),checkout:null,flight:Math.round([1850,1690,2100,2300][i]*req.people/2),hotel:Math.round([1450,1650,1750,1800][i]*(req.days/7)),total:Math.round(([1850,1690,2100,2300][i]*req.people/2)+([1450,1650,1750,1800][i]*(req.days/7))),carrier:["LATAM / GOL","GOL / Azul","LATAM / GOL","Azul"][i],hotelName:"Hotel bem localizado",rating:4.2,demo:true,currency:"BRL"}));}
+function demo(req){
+  if(req.multiCity?.length>=2){
+    const route=req.multiCity;
+    const flight=Math.round(5200*req.people/2);
+    const hotel=Math.round(4200*(req.days/10));
+    return [{
+      destination:route.map(c=>c.name).join(' → '),
+      country:[...new Set(route.map(c=>c.country).filter(Boolean))].join(', '),
+      checkin:dateISO(req.year,req.month,5),checkout:null,
+      flight,hotel,total:flight+hotel,carrier:'Companhia aérea (simulação)',
+      hotelName:'Hospedagens nas cidades do roteiro',rating:4.2,demo:true,currency:'BRL',train:true,
+      trainSegments:route.slice(0,-1).map((c,i)=>({from:c.name,to:route[i+1].name,link:omioLink(c.name,route[i+1].name)}))
+    }];
+  }
+  let base=[];
+  if(req.countryCandidates?.length) base=req.countryCandidates;
+  else if(req.explicit?.length) base=req.explicit;
+  else if(req.regionCandidates?.length) base=req.regionCandidates;
+  else if(req.beach) base=[...beachBrazil,...beachInternational].map(k=>cities[k]).filter(Boolean);
+  else if(req.brazilOnly) base=broadBrazil.map(k=>cities[k]).filter(Boolean);
+  else base=broadBrazil.map(k=>cities[k]).filter(Boolean);
+  base=uniqueById(base.filter(d=>d&&d.iata!==req.originIata)).slice(0,6);
+  return base.map((d,i)=>{
+    const flightBase=[1850,1690,2100,2300,2450,2600][i%6];
+    const hotelBase=[1450,1650,1750,1800,1900,2000][i%6];
+    const flight=Math.round(flightBase*req.people/2);
+    const hotel=Math.round(hotelBase*(req.days/7));
+    return {destination:d.name,country:d.country,checkin:dateISO(req.year,req.month,[3,10,17,24,5,12][i%6]),checkout:null,flight,hotel,total:flight+hotel,carrier:['LATAM / GOL','GOL / Azul','LATAM / GOL','Azul','TAP / parceira','Companhia aérea'][i%6],hotelName:'Hotel bem localizado',rating:4.2,demo:true,currency:'BRL',train:!!req.train};
+  });
+}
 
-async function handler(event){
+exports.handler=async(event)=>{
   if(event.httpMethod!=="POST")return {statusCode:405,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:"Método não permitido"})};
   try{
     const body=JSON.parse(event.body||"{}");
     if(body.action==="deals"||body.action==="achadinhos") {
-      if(!process.env.SERPAPI_KEY) return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",origin:"São Paulo",results:[]})};
-      const out=await dealsPlan({...body,dealsMode:body.action});
-      return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",...out})};
+      const origin=String(body.originIata||"GRU").toUpperCase();
+      if(!process.env.SERPAPI_KEY){
+        return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",origin:origin==="ALL"?"Principais aeroportos do Brasil":origin,originIata:origin,modeLabel:body.action==="achadinhos"?"Achadinhos demonstrativos":"Passagens demonstrativas",results:demoDeals(origin,body.tripLength,body.action==="achadinhos")})};
+      }
+      try{
+        const out=await dealsPlan({...body,dealsMode:body.action});
+        if(out.results?.length) return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",...out})};
+      }catch(e){}
+      return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",origin:origin==="ALL"?"Principais aeroportos do Brasil":origin,originIata:origin,modeLabel:body.action==="achadinhos"?"Achadinhos demonstrativos":"Passagens demonstrativas",results:demoDeals(origin,body.tripLength,body.action==="achadinhos")})};
+    }
+    if(body.action==="explore") {
+      const origin=String(body.originIata||body.origin||"GRU").toUpperCase();
+      if(!process.env.SERPAPI_KEY) return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:{originIata:origin},results:demoExplore(origin)})};
+      try{
+        const reqExplore=parseRequest("Quero viajar para fora do Brasil e explorar destinos",origin,2);
+        const found=await discoverDestinations(reqExplore);
+        const destinations=found.filter(d=>d.iata&&d.iata!==origin).slice(0,8);
+        const dt=dateOptions(reqExplore)[0];
+        const jobs=destinations.map(async dest=>{try{const f=await realFlight(origin,dest,dt.start,dt.end,2);return f?{destination:dest.name,country:dest.country,flight:f.amount,checkin:dt.start,checkout:dt.end,flightLink:f.googleLink,demo:false,currency:"BRL",carrier:f.carrier}:null}catch(e){return null;}});
+        const live=(await Promise.all(jobs)).filter(Boolean).sort((a,b)=>a.flight-b.flight);
+        if(live.length) return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",parsed:{originIata:origin},results:live.slice(0,9)})};
+      }catch(e){}
+      return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:{originIata:origin},results:demoExplore(origin)})};
     }
     let req=parseRequest(body.text,body.origin,body.people);const ai=await geminiUnderstand(body.text,body.origin,body.people);req=await applyAI(req,ai);const dates=dateOptions(req);
-    if(!process.env.SERPAPI_KEY)return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:req,results:demo(req),notice:"Modo demonstração"})};
+    if(!process.env.SERPAPI_KEY)return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:req,results:demo(req)})};
 
     // Se o parser já encontrou duas ou mais cidades conhecidas, preserve exatamente essa ordem.
     // Não fazemos um novo autocomplete do trecho inteiro, pois isso pode transformar o nome de um país
@@ -359,6 +515,9 @@ async function handler(event){
     let explicit=req.multiCity?.length>=2 ? req.multiCity : await resolveExplicit(req,body.text);
     if(explicit.length>=2 && /(conhecer|visitar|passar por|roteiro|cidades|cidades:|quero ir para|viajar para)/i.test(String(body.text||"")))req.multiCity=explicit;
     if(!req.multiCity?.length && explicit.length===1)req.explicit=explicit;
+    if(!req.multiCity?.length && req.train && req.countryCandidates?.length>=2 && req.country==='italia'){
+      req.multiCity=req.countryCandidates.slice(0,4);
+    }
 
     if(req.multiCity?.length>=2){
       const candidates=[];for(const dt of dates){try{const plan=await multiCityPlan(req,dt,req.multiCity);if(plan)candidates.push(plan);}catch(e){}}
@@ -366,8 +525,19 @@ async function handler(event){
     }
 
     let candidates=req.explicit.length?req.explicit.filter(c=>c.iata!==req.originIata):[];
+    if(!candidates.length && req.countryCandidates?.length){
+      candidates=req.countryCandidates.filter(c=>c.iata!==req.originIata);
+    }
+    // Quando o usuário pede um país + trem sem escolher cidades, sugerimos um roteiro ferroviário coerente.
+    if(!req.multiCity?.length && req.train && req.countryCandidates?.length>=2 && req.country==='italia'){
+      req.multiCity=req.countryCandidates.slice(0,4);
+      candidates=req.multiCity;
+    }
     if(!candidates.length){
-      if(req.region==="europe"){ const discovered=await discoverDestinations(req); candidates=discovered.length?discovered:(req.countryCandidates?.length?req.countryCandidates:broadInternational.filter(k=>["lisboa","porto","madrid","barcelona","paris","londres","bruxelas","amsterdam","roma","milao","berlim","viena","budapeste","praga","zurique","atenas","dublin","copenhague","estocolmo","oslo","istambul"].includes(k)).map(k=>cities[k]).filter(Boolean)); }
+      if(req.region && req.region !== "brazil"){
+        if(req.regionCandidates?.length) candidates=req.regionCandidates;
+        else { const discovered=await discoverDestinations(req); candidates=discovered.length?discovered:broadInternational.map(k=>cities[k]).filter(Boolean); }
+      }
       else if(req.beach)candidates=[...beachBrazil,...beachInternational].map(k=>cities[k]).filter(Boolean);
       else if(req.brazilOnly)candidates=broadBrazil.map(k=>cities[k]).filter(Boolean);
       else {const discovered=await discoverDestinations(req);candidates=discovered.length?discovered:[...broadBrazil,...broadInternational].map(k=>cities[k]).filter(Boolean);}
@@ -413,23 +583,9 @@ async function handler(event){
     });
     let results=(await Promise.all(jobs)).filter(Boolean).sort((a,b)=>a.total-b.total);
     if(req.budget){const within=results.filter(x=>x.total<=req.budget);if(within.length)results=within;}
+    if(!results.length){
+      return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:{...req,candidateCount:candidates.length,fallback:true},results:demo(req)})};
+    }
     return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",parsed:{...req,candidateCount:candidates.length},results:results.slice(0,10)})};
-  }catch(e){
-    try {
-      const fallbackText = (typeof body !== "undefined" && body && body.text) ? body.text : "Tenho até R$ 5.000, quero viajar por 7 dias e me surpreenda";
-      const fallbackOrigin = (typeof body !== "undefined" && body) ? body.origin : "Campo Grande, MS";
-      const fallbackPeople = (typeof body !== "undefined" && body) ? body.people : 2;
-      const fallbackReq = parseRequest(fallbackText, fallbackOrigin, fallbackPeople);
-      return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:fallbackReq,results:demo(fallbackReq),notice:"Busca real temporariamente indisponível. Exibindo demonstração."})};
-    } catch (_) {}
-    return {statusCode:500,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:e.message||"Erro ao pesquisar"})};
-  }
-};
-
-module.exports=async (req,res)=>{
-  const event={httpMethod:req.method,body:req.method==="POST"?JSON.stringify(req.body||{}):null};
-  const out=await handler(event);
-  res.status(out.statusCode||200);
-  Object.entries(out.headers||{}).forEach(([k,v])=>res.setHeader(k,v));
-  res.send(out.body||"");
+  }catch(e){return {statusCode:500,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:e.message||"Erro ao pesquisar"})};}
 };
