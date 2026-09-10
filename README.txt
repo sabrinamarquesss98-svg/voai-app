@@ -1,9 +1,17 @@
-VOAÍ V13 — inteligência conversacional e planejamento por contexto.
+VOAÍ V19 — MOTOR CONVERSACIONAL DE PASSAGENS
 
-Esta versão trata a conversa como contexto contínuo: preserva orçamento, origem, datas, pessoas e preferências entre mensagens; diferencia restrições de preferências; sugere alternativas quando há conflito; evita respostas repetidas; e permite transformar a conversa completa em uma busca de viagem.
+Base: V18 Travelpayouts Drive validado.
 
-Arquivos: index.html, api-plan.js, viagem.html, vercel.json, package.json.
+Novidades V19:
+- Entende “só de ida”, “somente de ida”, “apenas de ida” e “sem volta”.
+- Entende datas como “02 de fevereiro” e resolve o próximo ano quando necessário.
+- Entende preferências de horário: manhã, tarde, noite, tarde/noite e “depois das 14h”.
+- Busca voos de ida com o Google Flights via SerpApi quando a chave estiver disponível.
+- Prioriza o horário pedido e, se não houver resultado nesse intervalo, tenta a busca sem o filtro.
+- Permite destinos informados naturalmente e usa autocomplete para cidades não cadastradas.
+- Mantém o Travelpayouts Drive no início do <head>.
 
-Variáveis opcionais: GEMINI_API_KEY ou GEMINI_KEY; GEMINI_MODEL (padrão gemini-2.5-flash); SERPAPI_KEY.
-
-Não apagar o arquivo de verificação do Google Search Console que já existe no repositório.
+IMPORTANTE:
+- Não apagar o arquivo googlece076f25e9969ea4.html do repositório GitHub.
+- Passeios, aluguel de carros e monetização por afiliados serão conectados na próxima camada, após a ativação/verificação dos programas no Travelpayouts.
+- O modo sem chave continua usando demonstrações claramente marcadas.
