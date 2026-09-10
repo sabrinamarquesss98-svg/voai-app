@@ -109,20 +109,25 @@ const regionLabels={europe:"Europa",northAmerica:"América do Norte",centralAmer
 const broadInternational=["buenos aires","montevideu","santiago","lima","lisboa","porto","madrid","barcelona","paris","londres","bruxelas","amsterdam","roma","milao","berlim","viena","budapeste","praga","zurique","atenas","istambul","dubai","nova york","orlando","miami","toronto","cairo","cidade do cabo","toquio","bangkok","singapura","sydney","bali"];
 
 function norm(s){return String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");}
-function uniqueById(arr){const seen=new Set();return arr.filter(x=>x&&x.id&&!seen.has(x.id)&&(seen.add(x.id),true));}
+function uniqueById(arr){const seen=new Set();return arr.filter(x=>{if(!x)return false;const key=String(x.id||x.iata||x.name||'').toUpperCase();if(!key||seen.has(key))return false;seen.add(key);return true;});}
 
 function parseMoney(text){
   const s=norm(text);
   const patterns=[
+    /r\$\s*([0-9]{1,3}(?:[.][0-9]{3})+(?:,[0-9]+)?)\s*mil\b/i,
+    /r\$\s*([0-9]+(?:[.,][0-9]+)?)\s*mil\b/i,
+    /([0-9]+(?:[.,][0-9]+)?)\s*mil(?:\s*reais)?\b/i,
     /r\$\s*([0-9]{1,3}(?:[.][0-9]{3})+(?:,[0-9]+)?)/i,
     /r\$\s*([0-9]+(?:,[0-9]+)?)/i,
-    /(?:tenho|orçamento|orcamento|budget|até|ate|por|gastar|gastando|com)\s*(?:de\s*)?([0-9]{1,3}(?:[.][0-9]{3})+(?:,[0-9]+)?)\s*(?:reais|mil)?/i,
-    /([0-9]+(?:[.,][0-9]+)?)\s*mil\s*(?:reais)?/i
+    /(?:tenho|orçamento|orcamento|budget|até|ate|por|gastar|gastando|com|limite|máximo|maximo)\s*(?:(?:é|e|de|até|ate|no máximo|no maximo)\s*)?([0-9]{1,3}(?:[.][0-9]{3})+(?:,[0-9]+)?)\s*(?:reais)?/i,
+    /(?:tenho|orçamento|orcamento|budget|até|ate|por|gastar|gastando|com|limite|máximo|maximo)\s*(?:(?:é|e|de|até|ate|no máximo|no maximo)\s*)?([0-9]+(?:[.,][0-9]+)?)\s*mil(?:\s*reais)?\b/i,
+    /([0-9]+(?:[.,][0-9]+)?)\s*mil(?:\s*reais)?\b/i
   ];
   for(const re of patterns){
     const m=s.match(re); if(!m) continue;
     let raw=m[1];
-    if(/mil/.test(m[0])) return Number(raw.replace(',','.'))*1000;
+    const isMil=/mil\b/i.test(m[0]);
+    if(isMil) return Number(raw.replace(',','.').replace(/\.(?=\d{3}(?:$|\D))/g,''))*1000;
     if(raw.includes('.') && raw.includes(',')) raw=raw.replace(/\./g,'').replace(',','.');
     else if(raw.includes('.') && /\.[0-9]{3}$/.test(raw)) raw=raw.replace(/\./g,'');
     else raw=raw.replace(',','.');
@@ -131,17 +136,50 @@ function parseMoney(text){
   return null;
 }
 
+function inferPeople(text, explicitPeople){
+  const s=norm(text);
+  const explicit=Number(explicitPeople);
+  if(Number.isFinite(explicit)&&explicit>0) return Math.min(8,Math.max(1,explicit));
+  const direct=s.match(/\b(\d{1,2})\s*(?:pessoas|viajantes)\b/);
+  if(direct) return Math.min(8,Math.max(1,Number(direct[1])));
+  const adultM=s.match(/\b(\d{1,2})\s*adultos?\b/); const adultN=adultM?Number(adultM[1]):0;
+  const childMatches=s.match(/\b(\d{1,2})\s*(?:criancas?|filhos?|bebes?)\b/g)||[];
+  const childN=childMatches.reduce((sum,x)=>sum+(Number(x.match(/\d+/)?.[0]||1)),0);
+  if(adultN||childN){
+    const implicitAdults=(childN>0&&adultN===0)?1:0;
+    return Math.min(8,Math.max(1,adultN+childN+implicitAdults));
+  }
+  if(/\b(?:sozinho|sozinha|eu apenas|somente eu)\b/.test(s)) return 1;
+  let inferred=1;
+  if(/\b(?:eu\s+e\s+meu\s+(?:marido|esposo|companheiro)|meu\s+(?:marido|esposo|companheiro)|minha\s+esposa|meu\s+esposo)\b/.test(s)) inferred=2;
+  if(/\b(?:meu|minha|meus|minhas)\s+(?:filho|filha|filhos|filhas|bebe|bebê)|\bcriança\b/.test(s)) inferred+=1;
+  if(/\b(?:minha\s+familia|com\s+a\s+familia|com\s+a\s+família)\b/.test(s)) inferred=Math.max(inferred,3);
+  return Math.min(8,inferred);
+}
+
 function parseRequest(text,originInput,peopleInput){
   const original=String(text||''); const s=norm(original);
   const budget=parseMoney(original);
   const dayMatch=s.match(/(?:por|durante|de)\s*(\d+)\s*dias?|\b(\d+)\s*dias?\b/);
-  const days=Math.min(30,Math.max(2,Number(dayMatch?.[1]||dayMatch?.[2]||7)));
-  const people=Math.max(1,Math.min(8,Number(peopleInput)||2));
+  const daysExplicit=!!dayMatch;
+  let days=dayMatch?Math.min(30,Math.max(2,Number(dayMatch?.[1]||dayMatch?.[2]))):7;
+  const people=inferPeople(original,peopleInput);
+  const childCount=Math.min(6,(s.match(/\b(?:\d+\s*)?(?:criancas?|filhos?|bebes?)\b/g)||[]).reduce((sum,x)=>sum+(Number(x.match(/\d+/)?.[0]||1)),0));
+  const adultCount=Math.max(1,people-childCount);
   const months=['janeiro','fevereiro','marco','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
   let month=null;months.forEach((m,i)=>{if(s.includes(m))month=i+1});
   const now=new Date();
   if(!month) month=(now.getMonth()+2)>12?1:now.getMonth()+2;
-  const year=month<=now.getMonth()+1?now.getFullYear()+1:now.getFullYear();
+  let year=month<=now.getMonth()+1?now.getFullYear()+1:now.getFullYear();
+  const monthYear=s.match(/(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(?:de\s+)?(20\d{2})\b/);
+  if(monthYear)year=Number(monthYear[1]);
+  let startDate=null,endDate=null;
+  let dm=s.match(/\b(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?\b/);
+  if(dm){let yy=dm[3]?Number(dm[3]):year;if(yy<100)yy+=2000;const mm=Number(dm[2]),dd=Number(dm[1]);if(validDay(yy,mm,dd)){startDate=dateISO(yy,mm,dd);const range=s.match(/\b(?:a|até|ate|ate o dia)\s*(\d{1,2})[\/.-](\d{1,2})(?:[\/.-](\d{2,4}))?\b/);if(range){let ry=range[3]?Number(range[3]):yy;if(ry<100)ry+=2000;if(validDay(ry,Number(range[2]),Number(range[1])))endDate=dateISO(ry,Number(range[2]),Number(range[1]));}}}
+  if(!startDate){const monthPattern=new RegExp('\\b(\\d{1,2})\\s*(?:a|até|ate)\\s*(\\d{1,2})\\s*(?:de\\s*)?'+months[month-1]+'\\b');const mmx=s.match(monthPattern);if(mmx&&validDay(year,month,Number(mmx[1]))){startDate=dateISO(year,month,Number(mmx[1]));if(validDay(year,month,Number(mmx[2])))endDate=dateISO(year,month,Number(mmx[2]));}}
+  const yearMatch=s.match(/\b(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(?:de\s+)?(20\d{2})\b/);
+  if(yearMatch){ const explicitYear=Number(yearMatch[1]); if(explicitYear>=2020&&explicitYear<=2100){ /* preserve explicitly stated year */ } }
+  if(startDate&&endDate){const diff=Math.round((new Date(endDate)-new Date(startDate))/86400000);if(diff>=1&&diff<=30)days=diff;}
 
   const originRaw=norm(originInput); let originIata=aliases[originRaw]||(originRaw.match(/\(([a-z]{3})\)/)?.[1]||'').toUpperCase();
   if(!/^[A-Z]{3}$/.test(originIata)){
@@ -154,6 +192,7 @@ function parseRequest(text,originInput,peopleInput){
 
   const beach=/praia|mar|litoral|beach/.test(s);
   const train=/\btrem\b|trens|ferrovia|ferroviario|ferroviária|rail|comboio/.test(s);
+  const shortFlight=/pouco tempo no aviao|pouco tempo no avião|nao quero ficar muito tempo no aviao|não quero ficar muito tempo no avião|voo curto|voos curtos|voar pouco|evitar voo longo|evitar voos longos/.test(s);
   const international=/internacional|fora do brasil|fora do pais|exterior|outro pais|outros paises|europa|asia|america do sul|america do norte|america central|caribe|africa|oceania|mundo|italia|franca|espanha|portugal|alemanha|belgica|paises baixos|reino unido|canada|estados unidos|mexico/.test(s);
   const europe=/europa|europeu|europeia/.test(s);
   const brazilOnly=/somente brasil|so brasil|apenas brasil|no brasil|brasil apenas/.test(s);
@@ -198,17 +237,57 @@ function parseRequest(text,originInput,peopleInput){
   const regionCandidatesResolved=region&&regionCandidates[region]?regionCandidates[region].map(k=>cities[k]).filter(Boolean).map(c=>({...c,id:c.iata})):[];
   const surprise=/nao sei para onde|não sei para onde|qualquer lugar|qualquer destino|me surpreenda|sem destino/.test(s);
   const priceQuestion=/quanto custa|qual o preco|qual o preço|quanto vou gastar|quanto sai|valor da viagem|custa quanto/.test(s);
-  return {budget,days,people,month,year,originIata,beach,train,international,europe,brazilOnly,region,regionLabel:regionLabels[region]||null,country,countryCandidates,regionCandidates:regionCandidatesResolved,explicit:explicitFinal,multiCity:multiCityClean,surprise,priceQuestion};
+  return {budget,days,daysExplicit,people,adults:adultCount,children:childCount,month,year,startDate,endDate,originIata,beach,train,shortFlight,international,europe,brazilOnly,region,regionLabel:regionLabels[region]||null,country,countryCandidates,regionCandidates:regionCandidatesResolved,explicit:explicitFinal,multiCity:multiCityClean,surprise,priceQuestion};
 }
 
-async function geminiUnderstand(text,originInput,peopleInput){
+function conversationText(history,currentText){
+  const arr=Array.isArray(history)?history:[];
+  const prior=arr.filter(m=>m&&m.role==='user').map(m=>String(m.text||'').trim()).filter(Boolean);
+  const current=String(currentText||'').trim();
+  if(current) prior.push(current);
+  return prior.slice(-10).join('\n');
+}
+
+async function geminiUnderstand(text,originInput,peopleInput,history=[]){
   const GEMINI_KEY=process.env.GEMINI_API_KEY||process.env.GEMINI_KEY;
   if(!GEMINI_KEY) return null;
-  const prompt=`Você é o cérebro de uma agência de viagens chamada VOAÍ. Entenda o pedido abaixo e devolva SOMENTE JSON válido, sem markdown. Não invente preços. Extraia preferências e cidades mencionadas, mantendo a ordem. Se o usuário não souber o destino, deixe destinations vazio. Campos: region ("europe", "brazil", "world" ou null), budget (número ou null), days (número ou 7), month (1-12 ou null), year (número ou null), people (1-8), origin (texto ou null), destinations (array de textos), beach (boolean), international (boolean), brazilOnly (boolean), flexibleDates (boolean), preferences (array de textos), multiCity (boolean). Se o pedido disser Europa, use region="europe" e não invente uma cidade. Se citar apenas um país, mantenha o país e não transforme automaticamente em multicidades. Se pedir trem sem citar cidades, marque preferences=["trem"] e não invente cidades, a menos que um roteiro óbvio seja explicitamente pedido. Pedido: ${JSON.stringify(String(text||''))}. Origem informada separadamente: ${JSON.stringify(String(originInput||''))}. Pessoas informadas separadamente: ${JSON.stringify(String(peopleInput||''))}.`;
+  const conversation=conversationText(history,text);
+  const prompt=`Você é o cérebro de planejamento de viagens do VOAÍ. Analise a conversa completa e entenda a intenção do usuário pelo contexto, não por palavras isoladas. Preserve fatos já informados em mensagens anteriores até que o usuário os altere. Resolva referências como "lá", "esse lugar", "com ele", "com eles", "nessa viagem" usando o contexto anterior. Diferencie restrições obrigatórias de preferências negociáveis.
+
+Sua saída deve ser SOMENTE JSON válido, sem markdown, com estes campos:
+region (europe, brazil, world, northAmerica, centralAmerica, southAmerica, asia, africa, oceania ou null),
+budget (número em BRL ou null),
+days (número ou null), month (1-12 ou null), year (número ou null),
+people (1-8 ou null), adults (número ou null), children (número ou null), origin (texto ou null),
+destinations (array de textos, na ordem em que foram pedidos), country (texto ou null),
+beach (boolean), international (boolean), brazilOnly (boolean), train (boolean), shortFlight (boolean),
+flexibleDates (boolean), surprise (boolean),
+preferences (array de textos), hardConstraints (array de textos), softPreferences (array de textos),
+conflicts (array de textos), needsQuestion (boolean), question (texto curto ou null),
+recommendationMode ("recommend" | "compare" | "explain" | "search" | "clarify").
+
+Regras importantes:
+- "8 mil", "8k", "8 mil reais" = 8000.
+- Se a pessoa disser "eu, meu marido e meu filho", people=3, adults=2, children=1.
+- Se disser apenas "minha família", não invente quantidade se ela não puder ser inferida com segurança.
+- Se disser apenas mês sem duração, days=null, e não invente 7 dias.
+- Se disser "não sei para onde", recommendationMode="recommend" e surprise=true.
+- Se houver orçamento, origem e perfil suficientes, não peça outra informação só por hábito: recommendationMode="recommend" ou "search".
+- Se uma preferência entrar em conflito com orçamento ou tempo de voo, não falhe: registre o conflito e permita alternativas.
+- Se pedir país/região, preserve esse escopo. Não invente cidades como se fossem uma exigência do usuário.
+- Se pedir trem sem cidades, train=true, mas não invente um roteiro como fato.
+- Se pedir várias cidades, preserve a ordem.
+- Se o usuário mudar uma informação, use a informação nova.
+- Não invente preço ou disponibilidade.
+
+Conversa:
+${JSON.stringify(conversation)}
+Origem informada separadamente: ${JSON.stringify(String(originInput||''))}
+Pessoas informadas separadamente: ${JSON.stringify(String(peopleInput||''))}`;
   try{
     const model=process.env.GEMINI_MODEL||"gemini-2.5-flash";
     const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
-    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0,responseMimeType:'application/json'}})});
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0.15,responseMimeType:'application/json',maxOutputTokens:900}})});
     const data=await r.json();
     if(!r.ok) return null;
     const raw=data?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('')||'';
@@ -217,16 +296,26 @@ async function geminiUnderstand(text,originInput,peopleInput){
   }catch(e){return null;}
 }
 
-async function applyAI(req,ai){
+async function applyAI(req,ai,sourceText=""){
   if(!ai) return req;
-  if(Number.isFinite(Number(ai.budget))) req.budget=Number(ai.budget);
-  if(Number.isFinite(Number(ai.days))) req.days=Math.min(30,Math.max(2,Number(ai.days)));
-  if(Number.isFinite(Number(ai.people))) req.people=Math.min(8,Math.max(1,Number(ai.people)));
+  // O parser local entende corretamente expressões como “R$ 8 mil”.
+  // O Gemini às vezes devolve apenas 8; nesse caso não devemos destruir a escala do orçamento.
+  if(Number.isFinite(Number(ai.budget))) {
+    let aiBudget=Number(ai.budget);
+    const localBudget=Number(req.budget);
+    const source=norm(sourceText||'');
+    const milMatch=source.match(/(?:r\$\s*)?([0-9]+(?:[.,][0-9]+)?)\s*mil\b/i);
+    if(milMatch && aiBudget<100 && Number.isFinite(Number(localBudget)) && localBudget>=1000) aiBudget=Number(localBudget);
+    else if(milMatch && aiBudget<100) aiBudget=Number(milMatch[1].replace(',','.'))*1000;
+    req.budget=aiBudget;
+  }
+  if(Number.isFinite(Number(ai.days))) { req.days=Math.min(30,Math.max(2,Number(ai.days))); req.daysExplicit=true; }
   if(Number.isFinite(Number(ai.month))&&Number(ai.month)>=1&&Number(ai.month)<=12) req.month=Number(ai.month);
   if(Number.isFinite(Number(ai.year))) req.year=Number(ai.year);
   if(typeof ai.beach==='boolean') req.beach=ai.beach;
   if(typeof ai.international==='boolean') req.international=ai.international;
   if(req.europe) req.region='europe';
+  if(typeof ai.country==='string' && ai.country.trim()) req.country=norm(ai.country).replace(/\s+/g,' ');
   if(typeof ai.brazilOnly==='boolean') req.brazilOnly=ai.brazilOnly;
   if(['europe','brazil','world','northAmerica','centralAmerica','southAmerica','asia','africa','oceania'].includes(ai.region)) req.region=ai.region;
   if(typeof ai.origin==='string' && ai.origin.trim()){
@@ -235,6 +324,13 @@ async function applyAI(req,ai){
     if(known) req.originIata=known.iata; else { try{ const c=await autocompleteCity(ai.origin); if(c) req.originIata=c.iata; }catch(e){} }
   }
   req.aiPreferences=Array.isArray(ai.preferences)?ai.preferences.slice(0,8):[];
+  req.hardConstraints=Array.isArray(ai.hardConstraints)?ai.hardConstraints.slice(0,8):[];
+  req.softPreferences=Array.isArray(ai.softPreferences)?ai.softPreferences.slice(0,8):[];
+  req.conflicts=Array.isArray(ai.conflicts)?ai.conflicts.slice(0,8):[];
+  req.flexibleDates=!!ai.flexibleDates;
+  req.recommendationMode=ai.recommendationMode||null;
+  req.needsQuestion=!!ai.needsQuestion;
+  req.question=ai.question||null;
   const names=Array.isArray(ai.destinations)?ai.destinations.filter(Boolean):[];
   const resolved=[];
   for(const name of names){
@@ -256,7 +352,17 @@ async function applyAI(req,ai){
 
 function dateISO(y,m,d){return `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;}
 function validDay(y,m,d){const x=new Date(y,m-1,d);return x.getFullYear()===y&&x.getMonth()===m-1&&x.getDate()===d;}
-function dateOptions(req){const out=[];for(const d of [5,19]){if(validDay(req.year,req.month,d)){const start=dateISO(req.year,req.month,d),e=new Date(req.year,req.month-1,d+req.days);out.push({start,end:dateISO(e.getFullYear(),e.getMonth()+1,e.getDate())});}}return out;}
+function dateOptions(req){
+  if(req.startDate){
+    const end=req.endDate||(()=>{const e=new Date(req.startDate);e.setDate(e.getDate()+req.days);return dateISO(e.getFullYear(),e.getMonth()+1,e.getDate())})();
+    return [{start:req.startDate,end}];
+  }
+  const out=[];
+  for(const d of [3,5,10,12,17,19,24,26]){
+    if(validDay(req.year,req.month,d)){const start=dateISO(req.year,req.month,d),e=new Date(req.year,req.month-1,d+req.days);out.push({start,end:dateISO(e.getFullYear(),e.getMonth()+1,e.getDate())});}
+  }
+  return out;
+}
 
 async function serp(params){
   if(!process.env.SERPAPI_KEY) return null;
@@ -320,18 +426,18 @@ async function resolveExplicit(req,text){
 }
 function monthWord(s){return /^(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)$/.test(s);}
 
-async function realFlight(origin,dest,start,end,people){
-  const arrival=dest.iata||dest.id;const data=await serp({engine:"google_flights",departure_id:origin,arrival_id:arrival,outbound_date:start,return_date:end,type:1,travel_class:1,adults:people,currency:"BRL",gl:"br",hl:"pt",deep_search:false});
+async function realFlight(origin,dest,start,end,people,adults,children){
+  const arrival=dest.iata||dest.id;const data=await serp({engine:"google_flights",departure_id:origin,arrival_id:arrival,outbound_date:start,return_date:end,type:1,travel_class:1,adults:adults||people,children:children||0,currency:"BRL",gl:"br",hl:"pt",deep_search:false});
   const options=[...(data?.best_flights||[]),...(data?.other_flights||[])].filter(x=>x?.price!=null).sort((a,b)=>Number(a.price)-Number(b.price));const o=options[0];if(!o)return null;const first=o.flights?.[0];
   return {amount:Number(o.price),carrier:first?.airline||"Companhia aérea",logo:first?.airline_logo||null,duration:o.total_duration||null,bookingToken:o.booking_token||null,googleLink:`https://www.google.com/travel/flights?hl=pt-BR&curr=BRL&q=${encodeURIComponent(`${origin} ${arrival} ${start} ${end}`)}`};
 }
-async function realOneWayFlight(origin,dest,start,people){
-  const arrival=dest.iata||dest.id;const data=await serp({engine:"google_flights",departure_id:origin,arrival_id:arrival,outbound_date:start,type:2,travel_class:1,adults:people,currency:"BRL",gl:"br",hl:"pt",deep_search:false});
+async function realOneWayFlight(origin,dest,start,people,adults,children){
+  const arrival=dest.iata||dest.id;const data=await serp({engine:"google_flights",departure_id:origin,arrival_id:arrival,outbound_date:start,type:2,travel_class:1,adults:adults||people,children:children||0,currency:"BRL",gl:"br",hl:"pt",deep_search:false});
   const options=[...(data?.best_flights||[]),...(data?.other_flights||[])].filter(x=>x?.price!=null).sort((a,b)=>Number(a.price)-Number(b.price));const o=options[0];if(!o)return null;const first=o.flights?.[0];
   return {amount:Number(o.price),carrier:first?.airline||"Companhia aérea",logo:first?.airline_logo||null,googleLink:`https://www.google.com/travel/flights?hl=pt-BR&curr=BRL&q=${encodeURIComponent(`${origin} ${arrival} ${start}`)}`};
 }
-async function realHotel(dest,start,end,people){
-  const data=await serp({engine:"google_hotels",q:dest.name,check_in_date:start,check_out_date:end,adults:people,children:0,currency:"BRL",gl:"br",hl:"pt",sort_by:3});
+async function realHotel(dest,start,end,people,children){
+  const data=await serp({engine:"google_hotels",q:dest.name,check_in_date:start,check_out_date:end,adults:Math.max(1,people-(children||0)),children:children||0,currency:"BRL",gl:"br",hl:"pt",sort_by:3});
   const options=[...(data?.properties||[])].filter(x=>x?.rate_per_night?.extracted_lowest!=null||x?.total_rate?.extracted_lowest!=null);options.sort((a,b)=>Number(a.total_rate?.extracted_lowest??a.rate_per_night?.extracted_lowest)-Number(b.total_rate?.extracted_lowest??b.rate_per_night?.extracted_lowest));const h=options[0];if(!h)return null;
   const total=Number(h.total_rate?.extracted_lowest??(h.rate_per_night?.extracted_lowest*daysBetween(start,end)));const priceLink=h.prices?.find(p=>p.link)?.link||h.link||null;return {amount:total,name:h.name||"Hospedagem disponível",rating:h.overall_rating||null,link:priceLink};
 }
@@ -413,8 +519,8 @@ async function multiCityPlan(req,dt,citiesReq){
   const returnISO=dateISO(returnDate.getFullYear(),returnDate.getMonth()+1,returnDate.getDate());
   const first=citiesReq[0], last=citiesReq[citiesReq.length-1];
   const [outbound,returnFlight]=await Promise.all([
-    realOneWayFlight(req.originIata,first,dt.start,req.people).catch(()=>null),
-    realOneWayFlight(last,{iata:req.originIata,id:req.originIata,name:"Origem"},returnISO,req.people).catch(()=>null)
+    realOneWayFlight(req.originIata,first,dt.start,req.people,req.adults,req.children).catch(()=>null),
+    realOneWayFlight(last,{iata:req.originIata,id:req.originIata,name:"Origem"},returnISO,req.people,req.adults,req.children).catch(()=>null)
   ]);
   // Se o voo de ida funcionar, não descartamos o roteiro só porque um dos trechos aéreos
   // ou algum hotel não respondeu. Mostramos o que foi encontrado e deixamos os links para consulta.
@@ -425,7 +531,7 @@ async function multiCityPlan(req,dt,citiesReq){
     const checkin=dateISO(cursor.getFullYear(),cursor.getMonth()+1,cursor.getDate());
     const end=new Date(cursor);end.setDate(end.getDate()+nights[i]);
     const checkout=dateISO(end.getFullYear(),end.getMonth()+1,end.getDate());
-    hotelJobs.push(realHotel(city,checkin,checkout,req.people).then(h=>({city,checkin,checkout,h})).catch(()=>({city,checkin,checkout,h:null})));
+    hotelJobs.push(realHotel(city,checkin,checkout,req.people,req.children).then(h=>({city,checkin,checkout,h})).catch(()=>({city,checkin,checkout,h:null})));
     cursor=end;
   }
   const hotelResults=await Promise.all(hotelJobs);
@@ -448,6 +554,7 @@ async function multiCityPlan(req,dt,citiesReq){
   };
 }
 function demo(req){
+  if(!req.multiCity?.length && req.train && req.country==='italia' && req.countryCandidates?.length>=2){ req.multiCity=req.countryCandidates.slice(0,4); }
   if(req.multiCity?.length>=2){
     const route=req.multiCity;
     const flight=Math.round(5200*req.people/2);
@@ -455,7 +562,7 @@ function demo(req){
     return [{
       destination:route.map(c=>c.name).join(' → '),
       country:[...new Set(route.map(c=>c.country).filter(Boolean))].join(', '),
-      checkin:dateISO(req.year,req.month,5),checkout:null,
+      checkin:dateISO(req.year,req.month,5),checkout:(()=>{const e=new Date(req.year,req.month-1,5+req.days);return dateISO(e.getFullYear(),e.getMonth()+1,e.getDate())})(),
       flight,hotel,total:flight+hotel,carrier:'Companhia aérea (simulação)',
       hotelName:'Hospedagens nas cidades do roteiro',rating:4.2,demo:true,currency:'BRL',train:true,
       trainSegments:route.slice(0,-1).map((c,i)=>({from:c.name,to:route[i+1].name,link:omioLink(c.name,route[i+1].name)}))
@@ -474,21 +581,33 @@ function demo(req){
     const hotelBase=[1450,1650,1750,1800,1900,2000][i%6];
     const flight=Math.round(flightBase*req.people/2);
     const hotel=Math.round(hotelBase*(req.days/7));
-    return {destination:d.name,country:d.country,checkin:dateISO(req.year,req.month,[3,10,17,24,5,12][i%6]),checkout:null,flight,hotel,total:flight+hotel,carrier:['LATAM / GOL','GOL / Azul','LATAM / GOL','Azul','TAP / parceira','Companhia aérea'][i%6],hotelName:'Hotel bem localizado',rating:4.2,demo:true,currency:'BRL',train:!!req.train};
+    return {destination:d.name,country:d.country,checkin:dateISO(req.year,req.month,[3,10,17,24,5,12][i%6]),checkout:(()=>{const e=new Date(req.year,req.month-1,[3,10,17,24,5,12][i%6]+req.days);return dateISO(e.getFullYear(),e.getMonth()+1,e.getDate())})(),flight,hotel,total:flight+hotel,carrier:['LATAM / GOL','GOL / Azul','LATAM / GOL','Azul','TAP / parceira','Companhia aérea'][i%6],hotelName:'Hotel bem localizado',rating:4.2,demo:true,currency:'BRL',train:!!req.train};
   });
 }
 
 
-async function geminiChat(text, history, originInput, peopleInput){
+async function geminiChat(text, history, originInput, peopleInput, parsedReq){
   const GEMINI_KEY=process.env.GEMINI_API_KEY||process.env.GEMINI_KEY;
   if(!GEMINI_KEY) return null;
   const model=process.env.GEMINI_MODEL||"gemini-2.5-flash";
-  const system=`Você é o VOAÍ, uma IA especialista em viagens. Você conversa em português do Brasil, de forma natural, útil e humana. Sua função é entender o que a pessoa quer mesmo quando ela escreve de forma informal, incompleta ou muda de ideia. Considere orçamento, origem, datas, duração, número de pessoas, idade de crianças, clima, praia, cultura, comida, ritmo, medo de avião, trem, carro, primeira viagem internacional e qualquer outra preferência relevante. Não invente preços, disponibilidade, horários ou reservas. Quando não houver dados ao vivo, deixe claro que são estimativas ou sugestões. Não obrigue a pessoa a preencher formulários: faça no máximo uma pergunta curta quando uma informação for realmente necessária; se já houver informação suficiente, avance e dê uma recomendação. Se a pessoa disser que não sabe para onde ir, proponha destinos coerentes com o perfil. Se pedir 'quanto custa', explique os principais componentes do custo e, se faltar origem/duração, pergunte apenas o mínimo necessário. Se ela disser apenas um país ou região, não transforme isso automaticamente em roteiro de várias cidades. Se ela pedir trem, trate trem como preferência de transporte e sugira um roteiro ferroviário apenas quando fizer sentido. Nunca diga que fez uma reserva. Responda de forma curta, clara e conversacional.`;
-  const prior=Array.isArray(history)?history.slice(-12).map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:String(m.text||'')}]})):[];
-  const contents=[{role:'user',parts:[{text:system}]},...prior,{role:'user',parts:[{text:String(text||'')+`\nOrigem informada fora da conversa: ${String(originInput||'')}. Pessoas informadas fora da conversa: ${String(peopleInput||'')}.` }]}];
+  const system=`Você é o VOAÍ, uma consultora de viagens inteligente, elegante e prática. Você não é um formulário nem um chatbot que apenas repete dados. Você deve raciocinar sobre a viagem inteira e usar o contexto da conversa.
+
+Entenda linguagem informal, mensagens incompletas e mudanças de ideia. Preserve contexto anterior. Se a pessoa disser "e se eu...", "e com meu marido?", "mas quero praia", "e Portugal?", responda considerando tudo o que já foi dito.
+
+Seu objetivo é ajudar a tomar uma decisão. Quando houver informação suficiente, RECOMENDE opções concretas e explique rapidamente por que cada uma faz sentido. Quando houver conflito, proponha alternativas e diga qual requisito precisaria ser flexibilizado. Exemplo: se o orçamento não combina com Europa, não responda apenas que não encontrou; sugira América do Sul ou uma versão mais curta da Europa. Se a pessoa não souber para onde ir, escolha destinos coerentes com orçamento, origem, época, companhia, duração e preferências.
+
+Faça no máximo uma pergunta curta somente quando ela for realmente necessária para avançar. Se já houver informação suficiente para uma recomendação inicial, não pergunte: recomende.
+
+Nunca invente preço, disponibilidade, horário ou reserva. Se não houver pesquisa ao vivo disponível, trate valores como estimativas e não diga que encontrou uma tarifa real. Não finja ter pesquisado algo que não pesquisou.
+
+Não repita a mesma resposta. Não reescreva toda a mensagem do usuário. Seja natural, objetiva e útil, como uma excelente consultora de viagens.
+
+Contexto estruturado já identificado: ${JSON.stringify(parsedReq||{})}`;
+  const prior=Array.isArray(history)?history.slice(-14).map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:String(m.text||'')}]})):[ ];
+  const contents=[{role:'user',parts:[{text:system}]},...prior,{role:'user',parts:[{text:String(text||'')+`\nOrigem separada: ${String(originInput||'')}. Pessoas separadas: ${String(peopleInput||'')}.`}]}];
   try{
     const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
-    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents,generationConfig:{temperature:.35,maxOutputTokens:700}})});
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents,generationConfig:{temperature:.45,maxOutputTokens:800}})});
     const data=await r.json();
     if(!r.ok) return null;
     return data?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('').trim()||null;
@@ -497,18 +616,27 @@ async function geminiChat(text, history, originInput, peopleInput){
 
 function conversationalFallback(req,text){
   const name=req.country?req.country.charAt(0).toUpperCase()+req.country.slice(1):req.regionLabel;
-  if(req.priceQuestion){
-    return name?`Claro. Para ${name}, o custo depende principalmente de passagem, hospedagem, alimentação e deslocamentos. Se você me disser de onde sai, quantos dias e quantas pessoas, eu consigo montar uma estimativa e procurar opções.`:`Claro. Posso estimar a viagem. Me diga de onde você sai, quantos dias pretende ficar e para quantas pessoas.`;
-  }
+  const budget=req.budget?req.budget.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0}):null;
   if(req.surprise){
-    return `Adorei. Vou pensar como uma consultora de viagens: cruzar seu orçamento, origem, duração e preferências para sugerir destinos que realmente façam sentido. ${req.budget?`Com ${req.budget.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0})}, `:''}não precisa saber o destino antes de começar.`;
+    if(req.beach && req.shortFlight) return `Eu começaria por destinos de praia com deslocamento aéreo mais simples. Com ${budget||'o orçamento informado'}, eu compararia Nordeste e América do Sul antes de pensar em voos muito longos. Posso montar as opções e explicar qual entrega melhor custo-benefício.`;
+    return `Eu posso escolher por você. Vou cruzar ${budget?`seu orçamento de ${budget}, `:''}${req.month?`a época de viagem, `:''}${req.people?`o grupo de ${req.people} viajantes, `:''}a origem e suas preferências para encontrar destinos que façam sentido, inclusive alternativas caso a primeira opção fique cara.`;
+  }
+  if(req.priceQuestion){
+    return name?`Para ${name}, o custo depende principalmente de passagem, hospedagem e deslocamentos. ${budget?`Com um limite de ${budget}, `:''}posso comparar cenários e mostrar onde seu dinheiro rende mais.`:`Posso estimar a viagem considerando passagem, hospedagem, alimentação e deslocamentos. Se já houver orçamento e origem na conversa, não preciso que você repita essas informações.`;
+  }
+  if(req.conflicts?.length){
+    return `Entendi suas prioridades. Há uma combinação que pode ficar apertada: ${req.conflicts[0]}. Em vez de parar por aí, eu compararia uma opção que preserve o que é mais importante e outra que flexibilize apenas o ponto menos essencial.`;
   }
   if(req.country||req.regionLabel){
-    return `Entendi. Você quer explorar ${name||'o mundo'}${req.train?' com preferência por trem':''}${req.beach?' e com foco em praia':''}. Vou considerar isso junto com orçamento, datas e duração para não sugerir uma viagem que fuja do seu perfil.`;
+    return `Entendi: ${name||'esse destino'}${req.train?' com preferência por trem':''}${req.beach?' e foco em praia':''}${req.shortFlight?' evitando voos longos':''}. Vou considerar isso junto com ${budget?'seu orçamento, ':''}${req.people?`as ${req.people} pessoas, `:''}as datas e a duração para propor uma viagem coerente.`;
   }
-  return `Entendi. Me conte o que você tem em mente, mesmo que esteja incompleto. Pode falar de orçamento, datas, de onde sai, quem vai com você e o tipo de viagem que gostaria de fazer. Eu organizo as possibilidades para você.`;
+  if(req.beach||req.shortFlight||budget){
+    return `Entendi. Já consigo começar a montar possibilidades a partir de ${budget?`um orçamento de ${budget}`:'suas preferências'}${req.beach?' com foco em praia':''}${req.shortFlight?' e voo curto':''}. Se houver alguma restrição realmente indispensável, me diga; caso contrário, eu avanço com as melhores alternativas.`;
+  }
+  return `Entendi. Pode falar comigo como falaria com uma consultora de viagens. Você não precisa organizar tudo antes: eu consigo juntar orçamento, origem, datas, companhia e preferências ao longo da conversa.`;
 }
 
+const recentChatRequests=new Map();
 async function handler(event){
   if(event.httpMethod!=="POST")return {statusCode:405,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:"Método não permitido"})};
   try{
@@ -516,11 +644,19 @@ async function handler(event){
     if(body.action==="chat") {
       const text=String(body.text||"").trim();
       if(!text) return {statusCode:400,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:"Escreva uma mensagem para o VOAÍ."})};
-      let req=parseRequest(text,body.origin,body.people);
-      const ai=await geminiUnderstand(text,body.origin,body.people);
-      req=await applyAI(req,ai);
-      const reply=await geminiChat(text,body.history,body.origin,body.people) || conversationalFallback(req,text);
-      return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({reply,parsed:req,ai:!!ai,model:process.env.GEMINI_MODEL||"gemini-2.5-flash"})};
+      const requestId=String(body.requestId||"");
+      const stableKey=Buffer.from(JSON.stringify({text,history:Array.isArray(body.history)?body.history.slice(-6):[]})).toString('base64');
+      if(requestId && recentChatRequests.has(requestId)){ return recentChatRequests.get(requestId); }
+      if(stableKey && recentChatRequests.has(stableKey)){ return recentChatRequests.get(stableKey); }
+      const combinedConversation=conversationText(body.history,text);
+      let req=parseRequest(combinedConversation,body.origin,body.people);
+      const ai=await geminiUnderstand(text,body.origin,body.people,body.history);
+      req=await applyAI(req,ai,combinedConversation);
+      const reply=await geminiChat(text,body.history,body.origin,body.people,req) || conversationalFallback(req,text);
+      const response={statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({reply,parsed:req,ai:!!ai,model:process.env.GEMINI_MODEL||"gemini-2.5-flash"})};
+      if(requestId){recentChatRequests.set(requestId,response);setTimeout(()=>recentChatRequests.delete(requestId),120000);}
+      if(stableKey){recentChatRequests.set(stableKey,response);setTimeout(()=>recentChatRequests.delete(stableKey),120000);}
+      return response;
     }
     if(body.action==="deals"||body.action==="achadinhos") {
       const origin=String(body.originIata||"GRU").toUpperCase();
@@ -541,13 +677,13 @@ async function handler(event){
         const found=await discoverDestinations(reqExplore);
         const destinations=found.filter(d=>d.iata&&d.iata!==origin).slice(0,8);
         const dt=dateOptions(reqExplore)[0];
-        const jobs=destinations.map(async dest=>{try{const f=await realFlight(origin,dest,dt.start,dt.end,2);return f?{destination:dest.name,country:dest.country,flight:f.amount,checkin:dt.start,checkout:dt.end,flightLink:f.googleLink,demo:false,currency:"BRL",carrier:f.carrier}:null}catch(e){return null;}});
+        const jobs=destinations.map(async dest=>{try{const f=await realFlight(origin,dest,dt.start,dt.end,2,2,0);return f?{destination:dest.name,country:dest.country,flight:f.amount,checkin:dt.start,checkout:dt.end,flightLink:f.googleLink,demo:false,currency:"BRL",carrier:f.carrier}:null}catch(e){return null;}});
         const live=(await Promise.all(jobs)).filter(Boolean).sort((a,b)=>a.flight-b.flight);
         if(live.length) return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",parsed:{originIata:origin},results:live.slice(0,9)})};
       }catch(e){}
       return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:{originIata:origin},results:demoExplore(origin)})};
     }
-    let req=parseRequest(body.text,body.origin,body.people);const ai=await geminiUnderstand(body.text,body.origin,body.people);req=await applyAI(req,ai);const dates=dateOptions(req);
+    let req=parseRequest(body.text,body.origin,body.people);const ai=await geminiUnderstand(body.text,body.origin,body.people);req=await applyAI(req,ai,body.text);const dates=dateOptions(req);
     if(!process.env.SERPAPI_KEY)return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:req,results:demo(req)})};
 
     // Se o parser já encontrou duas ou mais cidades conhecidas, preserve exatamente essa ordem.
@@ -598,7 +734,7 @@ async function handler(event){
           try{
             const f=await realFlight(req.originIata,dest,d.start_date,d.end_date,req.people);
             if(!f)return null;
-            const h=await realHotel(dest,d.start_date,d.end_date,req.people).catch(()=>null);
+            const h=await realHotel(dest,d.start_date,d.end_date,req.people,req.children).catch(()=>null);
             const exploreHotel=Number(d.hotel_price||0);
             const hotelAmount=h?.amount||exploreHotel||0;
             return {destination:dest.name,country:dest.country,checkin:d.start_date,checkout:d.end_date,flight:f.amount,hotel:hotelAmount,total:f.amount+hotelAmount,carrier:f.carrier,airlineLogo:f.logo,hotelName:h?.name||null,rating:h?.rating||null,flightLink:f.googleLink,hotelLink:h?.link||null,exploreLink:d.link||null,thumbnail:d.thumbnail||null,numberOfStops:d.number_of_stops??null,duration:d.flight_duration||null,hotelUnavailable:!h,demo:false,currency:"BRL"};
@@ -612,17 +748,17 @@ async function handler(event){
       }catch(e){}
     }
 
-    const flightJobs=[];for(const dest of candidates)for(const dt of dates){flightJobs.push((async()=>{try{const f=await realFlight(req.originIata,dest,dt.start,dt.end,req.people);return f?{dest,dt,f}:null;}catch(e){return null;}})());}
+    const flightJobs=[];for(const dest of candidates)for(const dt of dates){flightJobs.push((async()=>{try{const f=await realFlight(req.originIata,dest,dt.start,dt.end,req.people,req.adults,req.children);return f?{dest,dt,f}:null;}catch(e){return null;}})());}
     let flights=(await Promise.all(flightJobs)).filter(Boolean).sort((a,b)=>a.f.amount-b.f.amount).slice(0,14);
     const jobs=flights.map(async item=>{
       try{
-        const h=await realHotel(item.dest,item.dt.start,item.dt.end,req.people).catch(()=>null);
+        const h=await realHotel(item.dest,item.dt.start,item.dt.end,req.people,req.children).catch(()=>null);
         return {destination:item.dest.name,country:item.dest.country,checkin:item.dt.start,checkout:item.dt.end,flight:item.f.amount,hotel:h?.amount||0,total:item.f.amount+(h?.amount||0),carrier:item.f.carrier,airlineLogo:item.f.logo,hotelName:h?.name||null,rating:h?.rating||null,flightLink:item.f.googleLink,hotelLink:h?.link||null,demo:false,currency:"BRL",hotelUnavailable:!h};
       }catch(e){
         return {destination:item.dest.name,country:item.dest.country,checkin:item.dt.start,checkout:item.dt.end,flight:item.f.amount,hotel:0,total:item.f.amount,carrier:item.f.carrier,airlineLogo:item.f.logo,flightLink:item.f.googleLink,demo:false,currency:"BRL",hotelUnavailable:true};
       }
     });
-    let results=(await Promise.all(jobs)).filter(Boolean).sort((a,b)=>a.total-b.total);
+    let results=(await Promise.all(jobs)).filter(Boolean).sort((a,b)=>{if(req.shortFlight){const ad=Number(a.duration||9999),bd=Number(b.duration||9999);if(ad!==bd)return ad-bd;}return a.total-b.total;});
     if(req.budget){const within=results.filter(x=>x.total<=req.budget);if(within.length)results=within;}
     if(!results.length){
       return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:{...req,candidateCount:candidates.length,fallback:true},results:demo(req)})};

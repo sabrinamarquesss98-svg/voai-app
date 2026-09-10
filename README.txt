@@ -1,13 +1,9 @@
-VOAÍ — V6
+VOAÍ V12 — inteligência conversacional e planejamento por contexto.
 
-Versão para Vercel com IA conversacional Gemini, planejamento de viagens, Google Flights/Hotels via SerpApi, Omio, Passagens Imperdíveis, Achadinhos VOAÍ e Explore.
+Esta versão trata a conversa como contexto contínuo: preserva orçamento, origem, datas, pessoas e preferências entre mensagens; diferencia restrições de preferências; sugere alternativas quando há conflito; evita respostas repetidas; e permite transformar a conversa completa em uma busca de viagem.
 
-V6 corrige a navegação das abas e faz Passagens Imperdíveis e Achadinhos aparecerem imediatamente, mesmo quando a pesquisa ao vivo estiver indisponível. A pesquisa ao vivo é tentada em seguida e, se não responder, o VOAÍ mantém ofertas demonstrativas clicáveis.
+Arquivos: index.html, api-plan.js, viagem.html, vercel.json, package.json.
 
-IMPORTANTE: mantenha no repositório o arquivo de verificação do Google Search Console:
-googlece076f25e9969ea4.html
+Variáveis opcionais: GEMINI_API_KEY ou GEMINI_KEY; GEMINI_MODEL (padrão gemini-2.5-flash); SERPAPI_KEY.
 
-Variáveis da Vercel:
-GEMINI_API_KEY ou GEMINI_KEY
-GEMINI_MODEL (opcional, padrão gemini-2.5-flash)
-SERPAPI_KEY
+Não apagar o arquivo de verificação do Google Search Console que já existe no repositório.
