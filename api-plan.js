@@ -144,6 +144,14 @@ function inferPeople(text, explicitPeople){
   if(Number.isFinite(explicit)&&explicit>0) return Math.min(8,Math.max(1,explicit));
   const direct=s.match(/\b(\d{1,2})\s*(?:pessoas|viajantes)\b/);
   if(direct) return Math.min(8,Math.max(1,Number(direct[1])));
+  // Formas naturais como “eu e meu marido e mais 2 amigos”
+  // significam o casal + os 2 amigos, portanto 4 viajantes.
+  const morePeople=s.match(/\bmais\s+(\d{1,2})\s*(?:amigos?|pessoas?|viajantes?)\b/);
+  if(morePeople){
+    const extra=Number(morePeople[1]);
+    const base=/\b(?:eu\s+e\s+meu\s+(?:marido|esposo|companheiro)|meu\s+(?:marido|esposo|companheiro)|minha\s+esposa)\b/.test(s)?2:1;
+    return Math.min(8,Math.max(1,base+extra));
+  }
   const adultM=s.match(/\b(\d{1,2})\s*adultos?\b/); const adultN=adultM?Number(adultM[1]):0;
   const childMatches=s.match(/\b(\d{1,2})\s*(?:criancas?|filhos?|bebes?)\b/g)||[];
   const childN=childMatches.reduce((sum,x)=>sum+(Number(x.match(/\d+/)?.[0]||1)),0);
@@ -242,7 +250,7 @@ function parseRequest(text,originInput,peopleInput){
   const countryHints={
     'italia':['roma','florenca','pisa','milao','veneza','napoles'],
     'franca':['paris'], 'espanha':['madrid','barcelona'], 'portugal':['lisboa','porto'],
-    'paises baixos':['amsterdam'], 'belgica':['bruxelas'], 'alemanha':['berlim','munique'],
+    'paises baixos':['amsterdam'], 'holanda':['amsterdam'], 'belgica':['bruxelas'], 'alemanha':['berlim','munique'],
     'reino unido':['londres'], 'grecia':['atenas'], 'austria':['viena'], 'hungria':['budapeste'],
     'republica tcheca':['praga'], 'suica':['zurique']
   };
@@ -258,7 +266,7 @@ function parseRequest(text,originInput,peopleInput){
   for(const [key,c] of Object.entries(cities)) if(s.includes(norm(c.name))||s.includes(key)) explicit.push({...c,id:c.id||c.iata});
   const explicitFinal=uniqueById(explicit).filter(c=>c.iata!==originIata);
   const multiCityClean=explicitFinal.length>=2 ? explicitFinal.slice(0,6) : [];
-  if(country && ['italia','franca','espanha','portugal','paises baixos','belgica','alemanha','reino unido','grecia','austria','hungria','republica tcheca','suica'].includes(country)) region='europe';
+  if(country && ['italia','franca','espanha','portugal','paises baixos','holanda','belgica','alemanha','reino unido','grecia','austria','hungria','republica tcheca','suica'].includes(country)) region='europe';
   const regionCandidatesResolved=region&&regionCandidates[region]?regionCandidates[region].map(k=>cities[k]).filter(Boolean).map(c=>({...c,id:c.id||c.iata})):[];
   const surprise=/nao sei para onde|não sei para onde|qualquer lugar|qualquer destino|me surpreenda|sem destino/.test(s);
   const priceQuestion=/quanto custa|qual o preco|qual o preço|quanto vou gastar|quanto sai|valor da viagem|custa quanto/.test(s);
@@ -751,13 +759,32 @@ async function handler(event){
       return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:{originIata:origin},results:demoExplore(origin)})};
     }
     let req=parseRequest(body.text,body.origin,body.people);const ai=await geminiUnderstand(body.text,body.origin,body.people);req=await applyAI(req,ai,body.text);const dates=dateOptions(req);
-    if(!process.env.SERPAPI_KEY)return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:req,results:demo(req)})};
+    // No planejamento principal, nunca mostramos preços inventados.
+    // Sem uma fonte de preços ao vivo, o resultado deve ser explicitamente indisponível.
+    if(!process.env.SERPAPI_KEY)return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"unavailable",reason:"live_search_unavailable",parsed:req,results:[]})};
 
     // Se o parser já encontrou duas ou mais cidades conhecidas, preserve exatamente essa ordem.
     // Não fazemos um novo autocomplete do trecho inteiro, pois isso pode transformar o nome de um país
     // em um ID inválido para o Google Flights.
     let explicit=req.multiCity?.length>=2 ? req.multiCity : await resolveExplicit(req,body.text);
     if(explicit.length>=2 && /(conhecer|visitar|passar por|roteiro|cidades|cidades:|quero ir para|viajar para)/i.test(String(body.text||"")))req.multiCity=explicit;
+
+    // Quando o usuário combina um país com uma cidade de outro país, preserve os dois pedidos.
+    // Ex.: “Holanda ... e também Bruxelas” -> Amsterdam (representante da Holanda) + Bruxelas.
+    if(!req.multiCity?.length && req.countryCandidates?.length && explicit.length>=1){
+      const representative=req.countryCandidates[0];
+      const merged=uniqueById([{...representative,id:representative.id||representative.iata},...explicit]);
+      if(merged.length>=2){
+        const textNorm=norm(body.text||"");
+        merged.sort((a,b)=>{
+          const pa=textNorm.indexOf(norm(a.name));
+          const pb=textNorm.indexOf(norm(b.name));
+          return (pa<0?99999:pa)-(pb<0?99999:pb);
+        });
+        req.multiCity=merged.slice(0,6);
+        req.explicit=req.multiCity;
+      }
+    }
     if(!req.multiCity?.length && explicit.length===1)req.explicit=explicit;
     if(!req.multiCity?.length && req.train && req.countryCandidates?.length>=2 && req.country==='italia'){
       req.multiCity=req.countryCandidates.slice(0,4);
@@ -855,7 +882,7 @@ async function handler(event){
     let results=(await Promise.all(jobs)).filter(Boolean).sort((a,b)=>{if(req.shortFlight){const ad=Number(a.duration||9999),bd=Number(b.duration||9999);if(ad!==bd)return ad-bd;}return a.total-b.total;});
     if(req.budget){const within=results.filter(x=>x.total<=req.budget);if(within.length)results=within;}
     if(!results.length){
-      return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"demo",parsed:{...req,candidateCount:candidates.length,fallback:true},results:demo(req)})};
+      return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"unavailable",reason:"no_live_results",parsed:{...req,candidateCount:candidates.length},results:[]})};
     }
     return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",parsed:{...req,candidateCount:candidates.length},results:results.slice(0,10)})};
   }catch(e){return {statusCode:500,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:e.message||"Erro ao pesquisar"})};}
