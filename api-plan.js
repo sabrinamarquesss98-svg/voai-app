@@ -94,6 +94,7 @@ Object.assign(aliases,{"cgr":"CGR","gru":"GRU","g3r":"GRU","bsb":"BSB","gig":"GI
 const beachBrazil=["maceio","recife","salvador","fortaleza","natal","joao pessoa","porto seguro","florianopolis","vitoria","aracaju","sao luis","rio de janeiro","fernando de noronha"];
 const beachInternational=["punta cana","cartagena","cancun","miami","barcelona","bali","cidade do cabo"];
 const broadBrazil=["sao paulo","rio de janeiro","brasilia","belo horizonte","curitiba","porto alegre","goiania","salvador","recife","fortaleza","florianopolis","maceio","natal","joao pessoa","foz do iguacu","manaus","belem"];
+const railEuropeRoute=["paris","bruxelas","amsterdam"].map(k=>cities[k]).filter(Boolean).map(c=>({...c,id:c.iata}));
 const regionCandidates={
   europe:["lisboa","porto","madrid","barcelona","paris","londres","bruxelas","amsterdam","roma","milao","berlim","viena","budapeste","praga","zurique","atenas","dublin","copenhague","estocolmo","oslo","istambul"],
   northAmerica:["nova york","orlando","miami","toronto","vancouver","los angeles","mexico city"],
@@ -277,6 +278,9 @@ Regras importantes:
 - Se pedir país/região, preserve esse escopo. Não invente cidades como se fossem uma exigência do usuário.
 - Se pedir trem sem cidades, train=true, mas não invente um roteiro como fato.
 - Se pedir várias cidades, preserve a ordem.
+- Nunca marque beach=true nem trate praia como preferência se a pessoa não tiver mencionado praia, mar ou litoral. Não invente preferências.
+- Nunca reduza o número de viajantes já inferido pelo texto.
+- Se train=true e region=europe sem cidades, registre isso como preferência por deslocamento ferroviário e deixe o sistema sugerir um roteiro ferroviário coerente; não substitua trem por avião.
 - Se o usuário mudar uma informação, use a informação nova.
 - Não invente preço ou disponibilidade.
 
@@ -312,11 +316,11 @@ async function applyAI(req,ai,sourceText=""){
   if(Number.isFinite(Number(ai.days))) { req.days=Math.min(30,Math.max(2,Number(ai.days))); req.daysExplicit=true; }
   if(Number.isFinite(Number(ai.month))&&Number(ai.month)>=1&&Number(ai.month)<=12) req.month=Number(ai.month);
   if(Number.isFinite(Number(ai.year))) req.year=Number(ai.year);
-  if(typeof ai.beach==='boolean') req.beach=ai.beach;
-  if(typeof ai.international==='boolean') req.international=ai.international;
+  if(ai.beach===true) req.beach=true;
+  if(ai.international===true) req.international=true;
   if(req.europe) req.region='europe';
   if(typeof ai.country==='string' && ai.country.trim()) req.country=norm(ai.country).replace(/\s+/g,' ');
-  if(typeof ai.brazilOnly==='boolean') req.brazilOnly=ai.brazilOnly;
+  if(ai.brazilOnly===true) req.brazilOnly=true;
   if(['europe','brazil','world','northAmerica','centralAmerica','southAmerica','asia','africa','oceania'].includes(ai.region)) req.region=ai.region;
   if(typeof ai.origin==='string' && ai.origin.trim()){
     const n=norm(ai.origin);
@@ -555,6 +559,7 @@ async function multiCityPlan(req,dt,citiesReq){
 }
 function demo(req){
   if(!req.multiCity?.length && req.train && req.country==='italia' && req.countryCandidates?.length>=2){ req.multiCity=req.countryCandidates.slice(0,4); }
+  if(!req.multiCity?.length && req.train && req.region==='europe' && railEuropeRoute.length>=2){ req.multiCity=railEuropeRoute.slice(0,3); }
   if(req.multiCity?.length>=2){
     const route=req.multiCity;
     const flight=Math.round(5200*req.people/2);
@@ -601,6 +606,8 @@ Faça no máximo uma pergunta curta somente quando ela for realmente necessária
 Nunca invente preço, disponibilidade, horário ou reserva. Se não houver pesquisa ao vivo disponível, trate valores como estimativas e não diga que encontrou uma tarifa real. Não finja ter pesquisado algo que não pesquisou.
 
 Não repita a mesma resposta. Não reescreva toda a mensagem do usuário. Seja natural, objetiva e útil, como uma excelente consultora de viagens.
+
+REGRA DE FIDELIDADE: use o contexto estruturado como fonte de verdade para preferências explícitas. Se beach=false, não diga que a pessoa quer praia. Se train=true, trate trem como requisito/preferência real e inclua trem na proposta quando recomendar roteiro. Se people estiver definido, não altere a quantidade. Se alguma informação não foi dita, não a invente.
 
 Contexto estruturado já identificado: ${JSON.stringify(parsedReq||{})}`;
   const prior=Array.isArray(history)?history.slice(-14).map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:String(m.text||'')}]})):[ ];
@@ -649,8 +656,8 @@ async function handler(event){
       if(requestId && recentChatRequests.has(requestId)){ return recentChatRequests.get(requestId); }
       if(stableKey && recentChatRequests.has(stableKey)){ return recentChatRequests.get(stableKey); }
       const combinedConversation=conversationText(body.history,text);
-      let req=parseRequest(combinedConversation,body.origin,body.people);
-      const ai=await geminiUnderstand(text,body.origin,body.people,body.history);
+      let req=parseRequest(combinedConversation,body.origin,null);
+      const ai=await geminiUnderstand(text,body.origin,null,body.history);
       req=await applyAI(req,ai,combinedConversation);
       const reply=await geminiChat(text,body.history,body.origin,body.people,req) || conversationalFallback(req,text);
       const response={statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({reply,parsed:req,ai:!!ai,model:process.env.GEMINI_MODEL||"gemini-2.5-flash"})};
@@ -695,6 +702,9 @@ async function handler(event){
     if(!req.multiCity?.length && req.train && req.countryCandidates?.length>=2 && req.country==='italia'){
       req.multiCity=req.countryCandidates.slice(0,4);
     }
+    if(!req.multiCity?.length && req.train && req.region==='europe' && railEuropeRoute.length>=2){
+      req.multiCity=railEuropeRoute.slice(0,3);
+    }
 
     if(req.multiCity?.length>=2){
       const candidates=[];for(const dt of dates){try{const plan=await multiCityPlan(req,dt,req.multiCity);if(plan)candidates.push(plan);}catch(e){}}
@@ -708,6 +718,10 @@ async function handler(event){
     // Quando o usuário pede um país + trem sem escolher cidades, sugerimos um roteiro ferroviário coerente.
     if(!req.multiCity?.length && req.train && req.countryCandidates?.length>=2 && req.country==='italia'){
       req.multiCity=req.countryCandidates.slice(0,4);
+      candidates=req.multiCity;
+    }
+    if(!req.multiCity?.length && req.train && req.region==='europe' && railEuropeRoute.length>=2){
+      req.multiCity=railEuropeRoute.slice(0,3);
       candidates=req.multiCity;
     }
     if(!candidates.length){
