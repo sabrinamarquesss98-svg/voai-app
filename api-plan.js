@@ -191,7 +191,7 @@ function parseRequest(text,originInput,peopleInput){
   }
   if(!/^[A-Z]{3}$/.test(originIata)) originIata='CGR';
 
-  const beach=/praia|mar|litoral|beach/.test(s);
+  const beach=/\bpraia\b|\bmar\b|\blitoral\b|\bbeach\b/.test(s);
   const train=/\btrem\b|trens|ferrovia|ferroviario|ferroviária|rail|comboio/.test(s);
   const shortFlight=/pouco tempo no aviao|pouco tempo no avião|nao quero ficar muito tempo no aviao|não quero ficar muito tempo no avião|voo curto|voos curtos|voar pouco|evitar voo longo|evitar voos longos/.test(s);
   const international=/internacional|fora do brasil|fora do pais|exterior|outro pais|outros paises|europa|asia|america do sul|america do norte|america central|caribe|africa|oceania|mundo|italia|franca|espanha|portugal|alemanha|belgica|paises baixos|reino unido|canada|estados unidos|mexico/.test(s);
