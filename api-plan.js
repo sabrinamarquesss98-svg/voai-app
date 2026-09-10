@@ -206,7 +206,8 @@ async function geminiUnderstand(text,originInput,peopleInput){
   if(!GEMINI_KEY) return null;
   const prompt=`Você é o cérebro de uma agência de viagens chamada VOAÍ. Entenda o pedido abaixo e devolva SOMENTE JSON válido, sem markdown. Não invente preços. Extraia preferências e cidades mencionadas, mantendo a ordem. Se o usuário não souber o destino, deixe destinations vazio. Campos: region ("europe", "brazil", "world" ou null), budget (número ou null), days (número ou 7), month (1-12 ou null), year (número ou null), people (1-8), origin (texto ou null), destinations (array de textos), beach (boolean), international (boolean), brazilOnly (boolean), flexibleDates (boolean), preferences (array de textos), multiCity (boolean). Se o pedido disser Europa, use region="europe" e não invente uma cidade. Se citar apenas um país, mantenha o país e não transforme automaticamente em multicidades. Se pedir trem sem citar cidades, marque preferences=["trem"] e não invente cidades, a menos que um roteiro óbvio seja explicitamente pedido. Pedido: ${JSON.stringify(String(text||''))}. Origem informada separadamente: ${JSON.stringify(String(originInput||''))}. Pessoas informadas separadamente: ${JSON.stringify(String(peopleInput||''))}.`;
   try{
-    const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
+    const model=process.env.GEMINI_MODEL||"gemini-2.5-flash";
+    const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
     const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0,responseMimeType:'application/json'}})});
     const data=await r.json();
     if(!r.ok) return null;
@@ -477,10 +478,50 @@ function demo(req){
   });
 }
 
+
+async function geminiChat(text, history, originInput, peopleInput){
+  const GEMINI_KEY=process.env.GEMINI_API_KEY||process.env.GEMINI_KEY;
+  if(!GEMINI_KEY) return null;
+  const model=process.env.GEMINI_MODEL||"gemini-2.5-flash";
+  const system=`Você é o VOAÍ, uma IA especialista em viagens. Você conversa em português do Brasil, de forma natural, útil e humana. Sua função é entender o que a pessoa quer mesmo quando ela escreve de forma informal, incompleta ou muda de ideia. Considere orçamento, origem, datas, duração, número de pessoas, idade de crianças, clima, praia, cultura, comida, ritmo, medo de avião, trem, carro, primeira viagem internacional e qualquer outra preferência relevante. Não invente preços, disponibilidade, horários ou reservas. Quando não houver dados ao vivo, deixe claro que são estimativas ou sugestões. Não obrigue a pessoa a preencher formulários: faça no máximo uma pergunta curta quando uma informação for realmente necessária; se já houver informação suficiente, avance e dê uma recomendação. Se a pessoa disser que não sabe para onde ir, proponha destinos coerentes com o perfil. Se pedir 'quanto custa', explique os principais componentes do custo e, se faltar origem/duração, pergunte apenas o mínimo necessário. Se ela disser apenas um país ou região, não transforme isso automaticamente em roteiro de várias cidades. Se ela pedir trem, trate trem como preferência de transporte e sugira um roteiro ferroviário apenas quando fizer sentido. Nunca diga que fez uma reserva. Responda de forma curta, clara e conversacional.`;
+  const prior=Array.isArray(history)?history.slice(-12).map(m=>({role:m.role==='assistant'?'model':'user',parts:[{text:String(m.text||'')}]})):[];
+  const contents=[{role:'user',parts:[{text:system}]},...prior,{role:'user',parts:[{text:String(text||'')+`\nOrigem informada fora da conversa: ${String(originInput||'')}. Pessoas informadas fora da conversa: ${String(peopleInput||'')}.` }]}];
+  try{
+    const url=`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents,generationConfig:{temperature:.35,maxOutputTokens:700}})});
+    const data=await r.json();
+    if(!r.ok) return null;
+    return data?.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('').trim()||null;
+  }catch(e){return null;}
+}
+
+function conversationalFallback(req,text){
+  const name=req.country?req.country.charAt(0).toUpperCase()+req.country.slice(1):req.regionLabel;
+  if(req.priceQuestion){
+    return name?`Claro. Para ${name}, o custo depende principalmente de passagem, hospedagem, alimentação e deslocamentos. Se você me disser de onde sai, quantos dias e quantas pessoas, eu consigo montar uma estimativa e procurar opções.`:`Claro. Posso estimar a viagem. Me diga de onde você sai, quantos dias pretende ficar e para quantas pessoas.`;
+  }
+  if(req.surprise){
+    return `Adorei. Vou pensar como uma consultora de viagens: cruzar seu orçamento, origem, duração e preferências para sugerir destinos que realmente façam sentido. ${req.budget?`Com ${req.budget.toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0})}, `:''}não precisa saber o destino antes de começar.`;
+  }
+  if(req.country||req.regionLabel){
+    return `Entendi. Você quer explorar ${name||'o mundo'}${req.train?' com preferência por trem':''}${req.beach?' e com foco em praia':''}. Vou considerar isso junto com orçamento, datas e duração para não sugerir uma viagem que fuja do seu perfil.`;
+  }
+  return `Entendi. Me conte o que você tem em mente, mesmo que esteja incompleto. Pode falar de orçamento, datas, de onde sai, quem vai com você e o tipo de viagem que gostaria de fazer. Eu organizo as possibilidades para você.`;
+}
+
 exports.handler=async(event)=>{
   if(event.httpMethod!=="POST")return {statusCode:405,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:"Método não permitido"})};
   try{
     const body=JSON.parse(event.body||"{}");
+    if(body.action==="chat") {
+      const text=String(body.text||"").trim();
+      if(!text) return {statusCode:400,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:"Escreva uma mensagem para o VOAÍ."})};
+      let req=parseRequest(text,body.origin,body.people);
+      const ai=await geminiUnderstand(text,body.origin,body.people);
+      req=await applyAI(req,ai);
+      const reply=await geminiChat(text,body.history,body.origin,body.people) || conversationalFallback(req,text);
+      return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({reply,parsed:req,ai:!!ai,model:process.env.GEMINI_MODEL||"gemini-2.5-flash"})};
+    }
     if(body.action==="deals"||body.action==="achadinhos") {
       const origin=String(body.originIata||"GRU").toUpperCase();
       if(!process.env.SERPAPI_KEY){
