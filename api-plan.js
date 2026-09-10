@@ -316,7 +316,13 @@ async function applyAI(req,ai,sourceText=""){
   if(Number.isFinite(Number(ai.days))) { req.days=Math.min(30,Math.max(2,Number(ai.days))); req.daysExplicit=true; }
   if(Number.isFinite(Number(ai.month))&&Number(ai.month)>=1&&Number(ai.month)<=12) req.month=Number(ai.month);
   if(Number.isFinite(Number(ai.year))) req.year=Number(ai.year);
-  if(ai.beach===true) req.beach=true;
+  // Preferências explícitas vêm da conversa local; o Gemini não pode inventá-las.
+  // Se a conversa completa não menciona praia/mar/litoral, beach permanece false.
+  const localText=norm(sourceText||'');
+  const localBeach=/\bpraia\b|\bmar\b|\blitoral\b|\bbeach\b/.test(localText);
+  const localTrain=/\btrem\b|\btrens\b|\bferrovia\b|\bferroviario\b|\bferroviária\b|\brail\b|\bcomboio\b/.test(localText);
+  req.beach=localBeach;
+  req.train=localTrain;
   if(ai.international===true) req.international=true;
   if(req.europe) req.region='europe';
   if(typeof ai.country==='string' && ai.country.trim()) req.country=norm(ai.country).replace(/\s+/g,' ');
@@ -345,7 +351,7 @@ async function applyAI(req,ai,sourceText=""){
   // A IA só pode transformar as cidades em roteiro multi-cidade quando ela realmente marcou multiCity=true.
   // Isso evita que um pedido simples como “Portugal em outubro” vire automaticamente Lisboa → Porto.
   if(resolved.length && ai.multiCity===true){req.multiCity=uniqueById(resolved).slice(0,6);req.explicit=req.multiCity;}
-  if(Array.isArray(ai.preferences)) {
+  if(Array.isArray(ai.preferences) && localTrain) {
     const prefs=ai.preferences.map(x=>norm(x));
     if(prefs.some(x=>/trem|ferrovia|rail|comboio/.test(x))) req.train=true;
   }
