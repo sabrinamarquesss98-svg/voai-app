@@ -1,18 +1,13 @@
-VOAÍ — versão definitiva V3 para publicação na Vercel.
+VOAÍ — V6
 
-Esta versão amplia a interpretação de regiões/continentes e adiciona fallback demonstrativo para Passagens Imperdíveis, Achadinhos e Explore o mundo quando a pesquisa ao vivo não estiver disponível.
+Versão para Vercel com IA conversacional Gemini, planejamento de viagens, Google Flights/Hotels via SerpApi, Omio, Passagens Imperdíveis, Achadinhos VOAÍ e Explore.
 
-Arquivos:
-- index.html
-- api-plan.js
-- viagem.html
-- vercel.json
-- package.json
+V6 corrige a navegação das abas e faz Passagens Imperdíveis e Achadinhos aparecerem imediatamente, mesmo quando a pesquisa ao vivo estiver indisponível. A pesquisa ao vivo é tentada em seguida e, se não responder, o VOAÍ mantém ofertas demonstrativas clicáveis.
 
-Variáveis de ambiente na Vercel:
-- SERPAPI_KEY
-- GEMINI_KEY (ou GEMINI_API_KEY)
+IMPORTANTE: mantenha no repositório o arquivo de verificação do Google Search Console:
+googlece076f25e9969ea4.html
 
-IMPORTANTE: mantenha no GitHub o arquivo googlece076f25e9969ea4.html já existente, usado na verificação do Google Search Console. Não apague esse arquivo.
-
-Observação: valores em modo demonstração são ilustrativos e não representam disponibilidade real. Quando a SerpApi estiver disponível, o VOAÍ prioriza resultados reais.
+Variáveis da Vercel:
+GEMINI_API_KEY ou GEMINI_KEY
+GEMINI_MODEL (opcional, padrão gemini-2.5-flash)
+SERPAPI_KEY

@@ -20,10 +20,10 @@
 <div class="wrap">
   <div class="top"><div class="logo">VOA<span>Í</span></div><div class="pill">Sua próxima viagem começa aqui</div></div>
   <nav class="tabs">
-    <button class="tab active" data-tab="planeje">🧠 Planeje sua viagem</button>
-    <button class="tab" data-tab="imperdiveis">🔥 Passagens imperdíveis</button>
-    <button class="tab" data-tab="achadinhos">💎 Achadinhos VOAÍ</button>
-    <button class="tab" data-tab="explore">🌎 Explore o mundo</button>
+    <button type="button" class="tab active" data-tab="planeje">🧠 Planeje sua viagem</button>
+    <button type="button" class="tab" data-tab="imperdiveis">🔥 Passagens imperdíveis</button>
+    <button type="button" class="tab" data-tab="achadinhos">💎 Achadinhos VOAÍ</button>
+    <button type="button" class="tab" data-tab="explore">🌎 Explore o mundo</button>
   </nav>
 
   <div id="planeje" class="tab-content">
@@ -66,8 +66,15 @@
 </div>
 <script>
 const $=id=>document.getElementById(id);function money(v){return Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0})}function fmtDate(s){if(!s)return 'data flexível';const [y,m,d]=s.split('-');return `${d}/${m}/${y}`}function daysBetween(a,b){return Math.max(1,Math.round((new Date(b)-new Date(a))/86400000))}function ex(t){$('q').value=t;buscar()}function surpresa(){ex('Tenho um orçamento de R$ 5.000 e quero viajar por 7 dias. Quero praia e não sei para onde.')}
-function switchTab(name){document.querySelectorAll('.tab-content').forEach(x=>x.style.display=x.id===name?'block':'none');document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name));window.scrollTo({top:0,behavior:'smooth'});if(name==='imperdiveis'&&!sessionStorage.getItem('voai_deals_loaded')){sessionStorage.setItem('voai_deals_loaded','1');carregarDeals('deals')}if(name==='achadinhos'&&!sessionStorage.getItem('voai_ach_loaded')){sessionStorage.setItem('voai_ach_loaded','1');carregarDeals('achadinhos')}if(name==='explore'&&!sessionStorage.getItem('voai_explore_loaded')){sessionStorage.setItem('voai_explore_loaded','1');explorar()}}
-document.querySelectorAll('.tab').forEach(x=>x.onclick=()=>switchTab(x.dataset.tab));
+function switchTab(name){
+  document.querySelectorAll('.tab-content').forEach(x=>x.style.display=x.id===name?'block':'none');
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name));
+  window.scrollTo({top:0,behavior:'smooth'});
+  if(name==='imperdiveis') carregarDeals('deals');
+  if(name==='achadinhos') carregarDeals('achadinhos');
+  if(name==='explore') explorar();
+}
+document.querySelectorAll('.tab').forEach(x=>x.addEventListener('click',function(e){e.preventDefault();switchTab(this.dataset.tab);}));
 function render(results,parsed){const el=$('cards');if(!results.length){el.innerHTML='<div class="card"><div class="tag">Sem opções</div><div class="route">Não encontramos uma combinação agora</div><div class="meta">Tente aumentar o orçamento ou flexibilizar as datas.</div></div>';return}el.innerHTML=results.map((x,i)=>{const trainText=x.train?(x.trainSegments?.length?`🚆 Roteiro de trem: ${x.trainSegments.map(t=>t.from+' → '+t.to).join(' • ')}`:'🚆 Incluí a preferência por trem no planejamento.') : ''; const regionIcon={europe:'🇪🇺',northAmerica:'🇺🇸',centralAmerica:'🌴',southAmerica:'🌎',asia:'🌏',africa:'🌍',oceania:'🌊'}; const understood=[parsed.regionLabel?`${regionIcon[parsed.region]||'🌎'} ${parsed.regionLabel}`:'',parsed.country?`📍 ${parsed.country}`:'',parsed.beach?'🏖️ praia':'',parsed.train?'🚆 trem':'',parsed.surprise?'✨ destino aberto':''].filter(Boolean).join(' • '); return `<article class="card"><div class="tag">${i===0?'⭐ Melhor opção':'Opção '+(i+1)}</div><div class="route">${x.destination}</div><div class="meta">${fmtDate(x.checkin)} a ${fmtDate(x.checkout)} • ${parsed.days||7} dias • ${x.carrier||'Companhia aérea'}</div>${understood?`<div class="meta">Entendi: ${understood}</div>`:''}<div class="price">${money(x.total)} <small>/ viagem</small></div><div class="split"><div><span class="label">✈️ Passagem</span><strong>${money(x.flight)}</strong></div><div><span class="label">🏨 Hospedagem</span><strong>${money(x.hotel)}</strong></div></div>${trainText?`<div class="hotel"><div class="hotel-name">${trainText}</div></div>`:''}${x.hotelName?`<div class="hotel"><div class="hotel-name">🏨 ${x.hotelName}</div>${x.rating?`<div class="hotel-rating">⭐ ${x.rating} avaliação</div>`:''}</div>`:''}<div class="meta">${x.demo?'Valores ilustrativos enquanto a busca de preços estiver em modo demonstração.':'Valores pesquisados agora.'}</div><div class="actions"><button class="cta" onclick="verOferta(${JSON.stringify(x).replace(/"/g,'&quot;')})">Ver viagem completa</button></div></article>`}).join('')}
 function verOferta(x){sessionStorage.setItem('voai_trip',JSON.stringify(x));location.href='/viagem.html'}
 
@@ -88,7 +95,33 @@ function dealCard(x,i,ach){
   const dealDescription=ach?(x.hotelName?`✈️ Voo + 🏨 hospedagem encontrados para estas datas.`:'Boa oportunidade de passagem; hospedagem a consultar.'):(x.description||x.highlights||'Boa oportunidade encontrada com datas flexíveis.');
   return `<article class="card deal-card">${save}${x.thumbnail?`<img class="deal-img" src="${x.thumbnail}" alt="${x.destination||'Destino'}">`:''}<div class="tag">${i===0?'🔥 Destaque':'Achadinho'}</div><div class="route">${ach?packageLabel:x.destination}</div><div class="meta">${ach&&nights?`${dates} • ${nights} dias`:`${x.country||'Destino'} • ${dates}`} • ${x.stops===0?'voo direto quando disponível':'com escala'}</div><div class="price">${money(ach&&total?total:x.price)} <small>${ach&&total?'/ voo + hotel':'/ ida e volta'}</small></div>${hotelPart}<div class="meta">${dealDescription}</div><div class="actions"><a class="cta" target="_blank" rel="noopener" href="${x.flightLink||'#'}" style="text-decoration:none;text-align:center">Ver passagem</a>${hotelLink}</div></article>`;
 }
-async function carregarDeals(action){const ach=action==='achadinhos';const cards=$(ach?'achadoCards':'dealCards');const origin=$(ach?'dealOrigin2':'dealOrigin').value;const length=$(ach?'dealLength2':'dealLength').value;cards.innerHTML='<div class="card"><div class="tag">Pesquisando agora</div><div class="route">🔥 Caçando tarifas...</div><div class="meta">Estamos procurando datas flexíveis e destinos interessantes.</div></div>';try{const r=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,originIata:origin,tripLength:length})});const data=await r.json();if(!r.ok)throw new Error(data.error||'Erro na busca');const arr=data.results||[];cards.innerHTML=arr.length?((data.mode==='demo'?'<div class="card" style="grid-column:1/-1"><div class="tag">Modo demonstração</div><div class="meta">Os valores abaixo são ilustrativos porque a pesquisa de tarifas ao vivo está indisponível no momento.</div></div>':'')+arr.map((x,i)=>dealCard(x,i,ach)).join('')):'<div class="card"><div class="tag">Nenhuma oferta</div><div class="route">Não encontramos achadinhos agora.</div><div class="meta">Tente outra origem ou duração.</div></div>'}catch(e){cards.innerHTML=`<div class="card"><div class="tag">Erro</div><div class="route">Não foi possível atualizar</div><div class="meta">${e.message}</div></div>`}}
+const frontendDealPool=[
+  {destination:'Buenos Aires',country:'Argentina',price:1480,discount:28,startDate:'2026-10-05',endDate:'2026-10-12',iata:'EZE',hotel:1350},
+  {destination:'Lisboa',country:'Portugal',price:3250,discount:24,startDate:'2026-10-19',endDate:'2026-10-27',iata:'LIS',hotel:1900},
+  {destination:'Santiago',country:'Chile',price:1690,discount:22,startDate:'2026-10-12',endDate:'2026-10-19',iata:'SCL',hotel:1450},
+  {destination:'Cancún',country:'México',price:2380,discount:31,startDate:'2026-11-03',endDate:'2026-11-10',iata:'CUN',hotel:1750},
+  {destination:'Paris',country:'França',price:3490,discount:21,startDate:'2026-10-05',endDate:'2026-10-13',iata:'CDG',hotel:2050},
+  {destination:'Punta Cana',country:'República Dominicana',price:2490,discount:27,startDate:'2026-10-19',endDate:'2026-10-26',iata:'PUJ',hotel:1800}
+];
+function localDemoDeals(origin,ach){const mult={CGR:1.12,GIG:1.02,BSB:1.05,GRU:1,REC:1.08,SSA:1.08,FOR:1.10,POA:1.08,CWB:1.06,FLN:1.08}[origin]||1.12;return frontendDealPool.map(d=>{const price=Math.round(d.price*mult);const hotel=ach?Math.round(d.hotel*mult):null;return {destination:d.destination,country:d.country,price,discount:d.discount,startDate:d.startDate,endDate:d.endDate,flightLink:`https://www.google.com/travel/flights?hl=pt-BR&curr=BRL&q=${encodeURIComponent(`${origin} ${d.iata} ${d.startDate}`)}`,airline:'Companhia aérea',stops:0,description:'Oportunidade demonstrativa enquanto a pesquisa ao vivo estiver indisponível.',originIata:origin,deal:true,demo:true,hotelName:ach?`Hotel bem avaliado em ${d.destination}`:null,rating:ach?4.5:null,hotelLink:ach?`https://www.google.com/travel/search?q=${encodeURIComponent(`hotéis ${d.destination}`)}`:null,totalWithHotel:ach?price+hotel:null};}).sort((a,b)=>b.discount-a.discount).slice(0,6)}
+async function carregarDeals(action){
+  const ach=action==='achadinhos';
+  const cards=$(ach?'achadoCards':'dealCards');
+  const origin=$(ach?'dealOrigin2':'dealOrigin').value;
+  const length=$(ach?'dealLength2':'dealLength').value;
+  cards.innerHTML=localDemoDeals(origin,ach).map((x,i)=>dealCard(x,i,ach)).join('');
+  const note=document.createElement('div'); note.className='card'; note.style.gridColumn='1/-1'; note.innerHTML='<div class="tag">🔎 Atualizando</div><div class="meta">Mostrando possibilidades enquanto o VOAÍ tenta buscar tarifas ao vivo. Se a pesquisa ao vivo estiver disponível, os resultados serão atualizados.</div>'; cards.prepend(note);
+  try{
+    const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),8000);
+    const r=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,originIata:origin,tripLength:length}),signal:controller.signal});
+    clearTimeout(timer);
+    const data=await r.json(); if(!r.ok)throw new Error(data.error||'Erro na busca');
+    const arr=data.results||[];
+    if(arr.length) cards.innerHTML=(data.mode==='demo'?'<div class="card" style="grid-column:1/-1"><div class="tag">Modo demonstração</div><div class="meta">Os valores abaixo são ilustrativos porque a pesquisa de tarifas ao vivo está indisponível no momento.</div></div>':'')+arr.map((x,i)=>dealCard(x,i,ach)).join('');
+  }catch(e){
+    cards.innerHTML='<div class="card" style="grid-column:1/-1"><div class="tag">VOAÍ continua funcionando ✈️</div><div class="route">Ofertas disponíveis</div><div class="meta">A pesquisa ao vivo está indisponível neste momento. As oportunidades abaixo continuam clicáveis para consulta.</div></div>'+localDemoDeals(origin,ach).map((x,i)=>dealCard(x,i,ach)).join('');
+  }
+}
 async function explorar(){const cards=$('exploreCards');const origin=$('exploreOrigin').value;cards.innerHTML='<div class="card"><div class="tag">Explorando</div><div class="route">🌎 Procurando destinos...</div></div>';try{const r=await fetch('/api/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'explore',originIata:origin,text:'Quero explorar destinos baratos'})});const data=await r.json();if(!r.ok)throw new Error(data.error||'Erro');const p=data.parsed||{};const arr=(data.results||[]).slice(0,9);cards.innerHTML=arr.length?arr.map((x,i)=>`<article class="card"><div class="tag">Destino ${i+1}</div><div class="route">${x.destination}</div><div class="meta">${x.country||''}</div><div class="price">${money(x.flight)} <small>voo encontrado</small></div><div class="meta">${fmtDate(x.checkin)} a ${fmtDate(x.checkout)}</div><a class="cta" target="_blank" rel="noopener" href="${x.flightLink||'#'}" style="display:block;text-decoration:none;text-align:center">Ver voo</a></article>`).join(''):'<div class="card"><div class="tag">Sem destinos</div><div class="route">Tente novamente.</div></div>'}catch(e){cards.innerHTML=`<div class="card"><div class="tag">Erro</div><div class="route">Não foi possível explorar agora</div><div class="meta">${e.message}</div></div>`}}
 </script>
 </body></html>
