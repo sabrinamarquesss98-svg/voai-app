@@ -509,7 +509,7 @@ function conversationalFallback(req,text){
   return `Entendi. Me conte o que você tem em mente, mesmo que esteja incompleto. Pode falar de orçamento, datas, de onde sai, quem vai com você e o tipo de viagem que gostaria de fazer. Eu organizo as possibilidades para você.`;
 }
 
-exports.handler=async(event)=>{
+async function handler(event){
   if(event.httpMethod!=="POST")return {statusCode:405,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:"Método não permitido"})};
   try{
     const body=JSON.parse(event.body||"{}");
@@ -629,4 +629,24 @@ exports.handler=async(event)=>{
     }
     return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",parsed:{...req,candidateCount:candidates.length},results:results.slice(0,10)})};
   }catch(e){return {statusCode:500,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:e.message||"Erro ao pesquisar"})};}
+};
+
+// Adaptador para Vercel Node Functions. O restante da lógica usa o formato
+// de evento interno acima para preservar as integrações existentes.
+module.exports = async function vercelHandler(req, res) {
+  try {
+    const event = {
+      httpMethod: req.method,
+      body: typeof req.body === "string" ? req.body : JSON.stringify(req.body || {})
+    };
+    const out = await handler(event);
+    const headers = out?.headers || {};
+    for (const [key, value] of Object.entries(headers)) res.setHeader(key, value);
+    res.statusCode = Number(out?.statusCode || 200);
+    res.end(out?.body || "");
+  } catch (e) {
+    res.statusCode = 500;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({error: e?.message || "Erro interno do VOAÍ"}));
+  }
 };
