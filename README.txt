@@ -1,17 +1,18 @@
-VOAÍ V19 — MOTOR CONVERSACIONAL DE PASSAGENS
+VOAÍ V22 — motor conversacional de viagem
 
-Base: V18 Travelpayouts Drive validado.
+Novidades desta versão:
+- preserva múltiplos destinos na ordem da conversa, incluindo Holanda/Amsterdam, Bruxelas, Paris e outros destinos
+- aceita roteiros com avião + trem + ônibus entre cidades
+- entende datas flexíveis e mais de um mês, como “maio ou junho”
+- “qualquer horário” não restringe a pesquisa de voos
+- mantém busca só de ida, horários preferidos, número de viajantes e origem
+- não apresenta preços fictícios quando a pesquisa real não está disponível
+- adiciona suporte para passeios/experiências e aluguel de carro no planejamento, com links de consulta aos parceiros
+- mantém Travelpayouts Drive no <head>
 
-Novidades V19:
-- Entende “só de ida”, “somente de ida”, “apenas de ida” e “sem volta”.
-- Entende datas como “02 de fevereiro” e resolve o próximo ano quando necessário.
-- Entende preferências de horário: manhã, tarde, noite, tarde/noite e “depois das 14h”.
-- Busca voos de ida com o Google Flights via SerpApi quando a chave estiver disponível.
-- Prioriza o horário pedido e, se não houver resultado nesse intervalo, tenta a busca sem o filtro.
-- Permite destinos informados naturalmente e usa autocomplete para cidades não cadastradas.
-- Mantém o Travelpayouts Drive no início do <head>.
+Arquivos: api-plan.js, index.html, viagem.html, package.json, vercel.json, README.txt
 
 IMPORTANTE:
-- Não apagar o arquivo googlece076f25e9969ea4.html do repositório GitHub.
-- Passeios, aluguel de carros e monetização por afiliados serão conectados na próxima camada, após a ativação/verificação dos programas no Travelpayouts.
-- O modo sem chave continua usando demonstrações claramente marcadas.
+- O arquivo googlece076f25e9969ea4.html de verificação do Google Search Console não faz parte deste ZIP. NÃO apague esse arquivo do GitHub.
+- A SERPAPI_KEY deve permanecer configurada como variável de ambiente no Vercel.
+- Passeios e aluguel de carro nesta versão abrem páginas de consulta dos parceiros; preços ao vivo desses serviços exigem uma API/feed do parceiro ou integração específica.

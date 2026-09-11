@@ -177,9 +177,11 @@ function parseRequest(text,originInput,peopleInput){
   const childCount=Math.min(6,(s.match(/\b(?:\d+\s*)?(?:criancas?|filhos?|bebes?)\b/g)||[]).reduce((sum,x)=>sum+(Number(x.match(/\d+/)?.[0]||1)),0));
   const adultCount=Math.max(1,people-childCount);
   const months=['janeiro','fevereiro','marco','abril','maio','junho','julho','agosto','setembro','outubro','novembro','dezembro'];
-  let month=null;months.forEach((m,i)=>{if(s.includes(m))month=i+1});
+  const monthCandidates=[];months.forEach((m,i)=>{if(s.includes(m))monthCandidates.push(i+1)});
+  let month=monthCandidates.length?monthCandidates[0]:null;
   const now=new Date();
   if(!month) month=(now.getMonth()+2)>12?1:now.getMonth()+2;
+  if(!monthCandidates.length) monthCandidates.push(month);
   let year=month<=now.getMonth()+1?now.getFullYear()+1:now.getFullYear();
   const monthYear=s.match(/(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(?:de\s+)?(20\d{2})\b/);
   if(monthYear)year=Number(monthYear[1]);
@@ -217,6 +219,9 @@ function parseRequest(text,originInput,peopleInput){
   const beach=/\bpraia\b|\bmar\b|\blitoral\b|\bbeach\b/.test(s);
   const train=/\btrem\b|trens|ferrovia|ferroviario|ferroviária|rail|comboio/.test(s);
   const bus=/\bonibus\b|\bautobus\b|\bbus\b|\bcoach\b/.test(s);
+  const tours=/\bpasseios?\b|\batracoes?\b|\batrações\b|\btours?\b|\bo que fazer\b|\batividades?\b|\bvisitas?\b/.test(s);
+  const carRental=/\balug(?:uel|ar) de carro\b|\bcarro alugado\b|\balugar um carro\b|\bcarro para alugar\b|\blocacao de carro\b|\blocação de carro\b|\brental car\b/.test(s);
+  const anyTime=/\bqualquer horario\b|\bqualquer horário\b|\bqualquer hora\b|\bsem preferencia de horario\b|\bsem preferência de horário\b|\btanto faz o horario\b|\btanto faz o horário\b/.test(s);
   const ground=!!(train||bus);
   const oneWay=/\b(?:so|somente|apenas)(?:\s+de)?\s+ida\b|\bida\s+somente\b|\bsem\s+volta\b|\bone\s*way\b/.test(s);
   let timePreference=null;
@@ -270,7 +275,7 @@ function parseRequest(text,originInput,peopleInput){
   const regionCandidatesResolved=region&&regionCandidates[region]?regionCandidates[region].map(k=>cities[k]).filter(Boolean).map(c=>({...c,id:c.id||c.iata})):[];
   const surprise=/nao sei para onde|não sei para onde|qualquer lugar|qualquer destino|me surpreenda|sem destino/.test(s);
   const priceQuestion=/quanto custa|qual o preco|qual o preço|quanto vou gastar|quanto sai|valor da viagem|custa quanto/.test(s);
-  return {budget,days,daysExplicit,people,adults:adultCount,children:childCount,month,year,startDate,endDate,originIata,beach,train,bus,ground,oneWay,timePreference,shortFlight,international,europe,brazilOnly,region,regionLabel:regionLabels[region]||null,country,countryCandidates,regionCandidates:regionCandidatesResolved,explicit:explicitFinal,multiCity:multiCityClean,surprise,priceQuestion};
+  return {budget,days,daysExplicit,people,adults:adultCount,children:childCount,month,months:monthCandidates,year,startDate,endDate,originIata,beach,train,bus,tours,carRental,anyTime,ground,oneWay,timePreference,shortFlight,international,europe,brazilOnly,region,regionLabel:regionLabels[region]||null,country,countryCandidates,regionCandidates:regionCandidatesResolved,explicit:explicitFinal,multiCity:multiCityClean,surprise,priceQuestion};
 }
 
 function conversationText(history,currentText){
@@ -294,7 +299,7 @@ days (número ou null), month (1-12 ou null), year (número ou null),
 people (1-8 ou null), adults (número ou null), children (número ou null), origin (texto ou null),
 destinations (array de textos, na ordem em que foram pedidos), country (texto ou null),
 beach (boolean), international (boolean), brazilOnly (boolean), train (boolean), bus (boolean), ground (boolean), shortFlight (boolean),
-flexibleDates (boolean), surprise (boolean), oneWay (boolean), timePreference (texto ou null),
+flexibleDates (boolean), surprise (boolean), oneWay (boolean), timePreference (texto ou null), tours (boolean), carRental (boolean), anyTime (boolean),
 preferences (array de textos), hardConstraints (array de textos), softPreferences (array de textos),
 conflicts (array de textos), needsQuestion (boolean), question (texto curto ou null),
 recommendationMode ("recommend" | "compare" | "explain" | "search" | "clarify").
@@ -311,7 +316,8 @@ Regras importantes:
 - Se pedir trem ou ônibus sem cidades, marque train e/ou bus=true, mas não invente um roteiro como fato.
 - Se pedir várias cidades, preserve a ordem.
 - Se disser “só ida”, “somente ida”, “apenas ida” ou “sem volta”, oneWay=true.
-- Se disser “à tarde”, “à noite”, “tarde/noite” ou “depois das 14h”, registre a preferência de horário em timePreference.
+- Se disser “à tarde”, “à noite”, “tarde/noite” ou “depois das 14h”, registre a preferência de horário em timePreference. Se disser “qualquer horário”, anyTime=true e não restrinja o horário.
+- Se pedir passeios, atrações, tours ou o que fazer, tours=true. Se pedir carro/aluguel de carro, carRental=true.
 - Nunca marque beach=true nem trate praia como preferência se a pessoa não tiver mencionado praia, mar ou litoral. Não invente preferências.
 - Nunca reduza o número de viajantes já inferido pelo texto.
 - Se train=true ou bus=true e region=europe sem cidades, registre isso como preferência por deslocamento terrestre e deixe o sistema sugerir um roteiro coerente; não substitua trem/ônibus por avião.
@@ -356,10 +362,17 @@ async function applyAI(req,ai,sourceText=""){
   const localBeach=/\bpraia\b|\bmar\b|\blitoral\b|\bbeach\b/.test(localText);
   const localTrain=/\btrem\b|\btrens\b|\bferrovia\b|\bferroviario\b|\bferroviária\b|\brail\b|\bcomboio\b/.test(localText);
   const localBus=/\bonibus\b|\bautobus\b|\bbus\b|\bcoach\b/.test(localText);
+  const localTours=/\bpasseios?\b|\batracoes?\b|\batrações\b|\btours?\b|\bo que fazer\b|\batividades?\b|\bvisitas?\b/.test(localText);
+  const localCarRental=/\balug(?:uel|ar) de carro\b|\bcarro alugado\b|\balugar um carro\b|\bcarro para alugar\b|\blocacao de carro\b|\blocação de carro\b|\brental car\b/.test(localText);
+  const localAnyTime=/\bqualquer horario\b|\bqualquer horário\b|\bqualquer hora\b|\bsem preferencia de horario\b|\bsem preferência de horário\b|\btanto faz o horario\b|\btanto faz o horário\b/.test(localText);
   const localOneWay=/\b(?:so|somente|apenas)(?:\s+de)?\s+ida\b|\bida\s+somente\b|\bsem\s+volta\b|\bone\s*way\b/.test(localText);
   req.beach=localBeach;
   req.train=localTrain;
   req.bus=localBus;
+  req.tours=localTours || !!ai.tours;
+  req.carRental=localCarRental || !!ai.carRental;
+  req.anyTime=localAnyTime || !!ai.anyTime;
+  if(req.anyTime) req.timePreference=null;
   req.ground=localTrain||localBus;
   req.oneWay=localOneWay || !!ai.oneWay;
   if(typeof ai.timePreference==='string' && ai.timePreference.trim()) req.timePreference=String(ai.timePreference).slice(0,60);
@@ -410,8 +423,11 @@ function dateOptions(req){
     return [{start:req.startDate,end}];
   }
   const out=[];
-  for(const d of [3,5,10,12,17,19,24,26]){
-    if(validDay(req.year,req.month,d)){const start=dateISO(req.year,req.month,d),e=new Date(req.year,req.month-1,d+req.days);out.push({start,end:dateISO(e.getFullYear(),e.getMonth()+1,e.getDate())});}
+  const months=Array.isArray(req.months)&&req.months.length?req.months:[req.month];
+  for(const m of months){
+    for(const d of [3,5,10,12,17,19,24,26]){
+      if(validDay(req.year,m,d)){const start=dateISO(req.year,m,d),e=new Date(req.year,m-1,d+req.days);out.push({start,end:dateISO(e.getFullYear(),e.getMonth()+1,e.getDate())});}
+    }
   }
   return out;
 }
@@ -579,6 +595,16 @@ function slugCity(name){return String(name||"").normalize("NFD").replace(/[\u030
 function omioLink(from,to){return `https://www.omio.com/trains/${slugCity(from)}/${slugCity(to)}`;}
 function omioBusLink(from,to){return `https://www.omio.com/buses/${slugCity(from)}/${slugCity(to)}`;}
 function splitNights(total,count){const base=Math.floor(total/count),rem=total%count;return Array.from({length:count},(_,i)=>base+(i<rem?1:0));}
+function viatorLink(destination){return `https://www.viator.com/searchResults/all?text=${encodeURIComponent(destination)}`;}
+function getYourGuideLink(destination){return `https://www.getyourguide.com/s/?q=${encodeURIComponent(destination)}`;}
+function discoverCarsLink(destination){return `https://www.discovercars.com/`; }
+function extrasForDestination(req,destination){
+  const extras={};
+  if(req.tours){extras.tours=[{provider:'Viator',link:viatorLink(destination),label:`Passeios em ${destination}`},{provider:'GetYourGuide',link:getYourGuideLink(destination),label:`Experiências em ${destination}`}];}
+  if(req.carRental){extras.cars=[{provider:'Discover Cars',link:discoverCarsLink(destination),label:`Aluguel de carro em ${destination}`}];}
+  return extras;
+}
+
 async function multiCityPlan(req,dt,citiesReq){
   if(citiesReq.length<2)return null;
   const nights=splitNights(Math.max(req.days,citiesReq.length),citiesReq.length);
@@ -610,7 +636,7 @@ async function multiCityPlan(req,dt,citiesReq){
     destination:citiesReq.map(c=>c.name).join(' → '),
     country:citiesReq.map(c=>c.country).filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i).join(', '),
     checkin:dt.start,checkout:returnISO,
-    flight,hotel:hotelTotal,total:flight+hotelTotal,
+    people:req.people,flight,hotel:hotelTotal,total:flight+hotelTotal,
     carrier:[outbound.carrier,returnFlight?.carrier].filter(Boolean).join(' / '),
     flightLink:outbound.googleLink,returnFlightLink:returnFlight?.googleLink,
     stops,
@@ -618,13 +644,14 @@ async function multiCityPlan(req,dt,citiesReq){
     groundMode:req.train&&req.bus?"trem ou ônibus":req.bus?"ônibus":"trem",
     missingHotels:hotelResults.filter(x=>!x.h).map(x=>x.city.name),
     missingReturnFlight:!returnFlight,
+    extras:{tours:req.tours?citiesReq.map(c=>({city:c.name,...extrasForDestination(req,c.name)})).filter(x=>x.tours?.length):[],cars:req.carRental?citiesReq.map(c=>({city:c.name,...extrasForDestination(req,c.name)})).filter(x=>x.cars?.length):[]},
     demo:false,currency:'BRL'
   };
 }
 function demo(req){
   if(req.oneWay && req.startDate){
     const base=(req.explicit?.length?req.explicit:req.countryCandidates?.length?req.countryCandidates:req.regionCandidates?.length?req.regionCandidates:[]).filter(d=>d&&d.iata!==req.originIata).slice(0,6);
-    return base.map((d,i)=>({destination:d.name,country:d.country,checkin:req.startDate,checkout:null,flight:[389,449,529,599,679,749][i%6],hotel:0,total:[389,449,529,599,679,749][i%6],carrier:['LATAM','GOL','Azul','LATAM','GOL','Azul'][i%6],demo:true,currency:'BRL',flightOnly:true,preferredTimeMatched:!!req.timePreference,timePreference:req.timePreference,departureTime:req.timePreference?`${String(Math.min(22,req.timePreference.start+1)).padStart(2,'0')}:20`:null,arrivalTime:null}));
+    return base.map((d,i)=>({destination:d.name,country:d.country,checkin:req.startDate,checkout:null,people:req.people,flight:[389,449,529,599,679,749][i%6],hotel:0,total:[389,449,529,599,679,749][i%6],carrier:['LATAM','GOL','Azul','LATAM','GOL','Azul'][i%6],demo:true,currency:'BRL',flightOnly:true,preferredTimeMatched:!!req.timePreference,timePreference:req.timePreference,departureTime:req.timePreference?`${String(Math.min(22,req.timePreference.start+1)).padStart(2,'0')}:20`:null,arrivalTime:null}));
   }
   if(!req.multiCity?.length && req.train && req.country==='italia' && req.countryCandidates?.length>=2){ req.multiCity=req.countryCandidates.slice(0,4); }
   if(!req.multiCity?.length && req.train && req.region==='europe' && railEuropeRoute.length>=2){ req.multiCity=railEuropeRoute.slice(0,3); }
@@ -804,7 +831,7 @@ async function handler(event){
       oneWayCandidates=uniqueById(oneWayCandidates).slice(0,12);
       const exactStart=req.startDate||dateOptions(req)[0]?.start;
       if(exactStart&&oneWayCandidates.length){
-        const jobs=oneWayCandidates.map(async dest=>{try{const f=await realOneWayFlight(req.originIata,dest,exactStart,req.people,req.adults,req.children,req.timePreference);return f?{destination:dest.name,country:dest.country,checkin:exactStart,checkout:null,flight:f.amount,hotel:0,total:f.amount,carrier:f.carrier,airlineLogo:f.logo,flightLink:f.googleLink,departureTime:f.departureTime,arrivalTime:f.arrivalTime,preferredTimeMatched:f.preferredTimeMatched,timePreference:req.timePreference,demo:false,currency:'BRL',flightOnly:true}:null;}catch(e){return null;}});
+        const jobs=oneWayCandidates.map(async dest=>{try{const f=await realOneWayFlight(req.originIata,dest,exactStart,req.people,req.adults,req.children,req.timePreference);return f?{destination:dest.name,country:dest.country,checkin:exactStart,checkout:null,flight:f.amount,hotel:0,total:f.amount,carrier:f.carrier,airlineLogo:f.logo,people:req.people,flightLink:f.googleLink,departureTime:f.departureTime,arrivalTime:f.arrivalTime,preferredTimeMatched:f.preferredTimeMatched,timePreference:req.timePreference,demo:false,currency:'BRL',flightOnly:true,extras:extrasForDestination(req,dest.name)}:null;}catch(e){return null;}});
         let oneWayResults=(await Promise.all(jobs)).filter(Boolean).sort((a,b)=>a.total-b.total);
         if(req.budget){const within=oneWayResults.filter(x=>x.total<=req.budget);if(within.length)oneWayResults=within;}
         if(oneWayResults.length){
@@ -844,7 +871,7 @@ async function handler(event){
 
     // Para pedidos abertos de Europa, use primeiro o Google Travel Explore para encontrar datas flexíveis.
     // Isso evita que a busca fique presa às quatro datas fixas do calendário quando existe uma tarifa em outra semana.
-    if(req.region==="europe" && !req.multiCity?.length){
+    if(req.region==="europe" && !req.multiCity?.length && !(req.months?.length>1)){
       try{
         const data=await serp({engine:"google_travel_explore",departure_id:req.originIata,arrival_area_id:"/m/02j9z",month:req.month,travel_duration:req.days<=4?1:req.days<=10?2:3,travel_class:1,currency:"BRL",gl:"br",hl:"pt"});
         const explored=(data?.destinations||[]).filter(d=>d?.destination_airport?.code||d?.destination_id).filter(d=>d?.flight_price!=null).sort((a,b)=>Number(a.flight_price)-Number(b.flight_price)).slice(0,4);
@@ -858,7 +885,7 @@ async function handler(event){
             const h=await realHotel(dest,d.start_date,d.end_date,req.people,req.children).catch(()=>null);
             const exploreHotel=Number(d.hotel_price||0);
             const hotelAmount=h?.amount||exploreHotel||0;
-            return {destination:dest.name,country:dest.country,checkin:d.start_date,checkout:d.end_date,flight:f.amount,hotel:hotelAmount,total:f.amount+hotelAmount,carrier:f.carrier,airlineLogo:f.logo,hotelName:h?.name||null,rating:h?.rating||null,flightLink:f.googleLink,hotelLink:h?.link||null,exploreLink:d.link||null,thumbnail:d.thumbnail||null,numberOfStops:d.number_of_stops??null,duration:d.flight_duration||null,hotelUnavailable:!h,demo:false,currency:"BRL"};
+            return {destination:dest.name,country:dest.country,checkin:d.start_date,checkout:d.end_date,flight:f.amount,hotel:hotelAmount,total:f.amount+hotelAmount,carrier:f.carrier,airlineLogo:f.logo,people:req.people,hotelName:h?.name||null,rating:h?.rating||null,flightLink:f.googleLink,hotelLink:h?.link||null,exploreLink:d.link||null,thumbnail:d.thumbnail||null,numberOfStops:d.number_of_stops??null,duration:d.flight_duration||null,hotelUnavailable:!h,demo:false,currency:"BRL",extras:extrasForDestination(req,dest.name)};
           }catch(e){return null;}
         });
         let exploredResults=(await Promise.all(jobs)).filter(Boolean).sort((a,b)=>a.total-b.total);
@@ -874,9 +901,9 @@ async function handler(event){
     const jobs=flights.map(async item=>{
       try{
         const h=await realHotel(item.dest,item.dt.start,item.dt.end,req.people,req.children).catch(()=>null);
-        return {destination:item.dest.name,country:item.dest.country,checkin:item.dt.start,checkout:item.dt.end,flight:item.f.amount,hotel:h?.amount||0,total:item.f.amount+(h?.amount||0),carrier:item.f.carrier,airlineLogo:item.f.logo,hotelName:h?.name||null,rating:h?.rating||null,flightLink:item.f.googleLink,hotelLink:h?.link||null,demo:false,currency:"BRL",hotelUnavailable:!h};
+        return {destination:item.dest.name,country:item.dest.country,checkin:item.dt.start,checkout:item.dt.end,flight:item.f.amount,hotel:h?.amount||0,total:item.f.amount+(h?.amount||0),carrier:item.f.carrier,airlineLogo:item.f.logo,hotelName:h?.name||null,rating:h?.rating||null,flightLink:item.f.googleLink,hotelLink:h?.link||null,demo:false,currency:"BRL",hotelUnavailable:!h,people:req.people,extras:extrasForDestination(req,item.dest.name)};
       }catch(e){
-        return {destination:item.dest.name,country:item.dest.country,checkin:item.dt.start,checkout:item.dt.end,flight:item.f.amount,hotel:0,total:item.f.amount,carrier:item.f.carrier,airlineLogo:item.f.logo,flightLink:item.f.googleLink,demo:false,currency:"BRL",hotelUnavailable:true};
+        return {destination:item.dest.name,country:item.dest.country,checkin:item.dt.start,checkout:item.dt.end,flight:item.f.amount,hotel:0,total:item.f.amount,carrier:item.f.carrier,airlineLogo:item.f.logo,flightLink:item.f.googleLink,demo:false,currency:"BRL",hotelUnavailable:true,people:req.people,extras:extrasForDestination(req,item.dest.name)};
       }
     });
     let results=(await Promise.all(jobs)).filter(Boolean).sort((a,b)=>{if(req.shortFlight){const ad=Number(a.duration||9999),bd=Number(b.duration||9999);if(ad!==bd)return ad-bd;}return a.total-b.total;});

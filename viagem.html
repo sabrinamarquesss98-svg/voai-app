@@ -33,6 +33,23 @@
 function money(v){return Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL',maximumFractionDigits:0})}
 function fmt(s){if(!s)return '';const [y,m,d]=s.split('-');return `${d}/${m}/${y}`}
 function esc(s){return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+function extrasHtml(x){
+  const t=[]; const c=[];
+  if(Array.isArray(x.extras?.tours)){
+    for(const v of x.extras.tours){
+      if(v?.link) t.push(v);
+      if(Array.isArray(v?.tours)) t.push(...v.tours.filter(Boolean));
+    }
+  }
+  if(Array.isArray(x.extras?.cars)){
+    for(const v of x.extras.cars){
+      if(v?.link) c.push(v);
+      if(Array.isArray(v?.cars)) c.push(...v.cars.filter(Boolean));
+    }
+  }
+  if(!t.length&&!c.length)return '';
+  return `<section class="card"><h2>✨ O que fazer e como se locomover</h2><p class="muted">Você também pode pesquisar passeios e aluguel de carro para complementar o roteiro. Os links levam aos parceiros para consultar as opções disponíveis.</p>${t.length?`<div class="section-title" style="margin-top:14px">Passeios e experiências</div><div class="buttons">${t.map(v=>`<a class="button secondary" target="_blank" rel="noopener" href="${esc(v.link)}">🎟️ ${esc(v.label||'Ver passeios')}</a>`).join('')}</div>`:''}${c.length?`<div class="section-title" style="margin-top:18px">Aluguel de carro</div><div class="buttons">${c.map(v=>`<a class="button secondary" target="_blank" rel="noopener" href="${esc(v.link)}">🚗 ${esc(v.label||'Pesquisar carros')}</a>`).join('')}</div>`:''}</section>`;
+}
 const x=JSON.parse(sessionStorage.getItem('voai_trip')||'null');
 if(!x){document.getElementById('content').innerHTML='<div class="card"><h2>Não encontrei essa viagem.</h2><p class="muted">Volte para a busca e escolha uma opção novamente.</p><button class="button primary" onclick="location.href='/'">Nova busca</button></div>'}
 else{
@@ -46,11 +63,12 @@ else{
    return;
  }
  document.getElementById('content').innerHTML=`
- <section class="hero"><span class="tag">⭐ Recomendação VOAÍ</span><h1>${esc(x.destination)} 🌎</h1><p>${esc(fmt(x.checkin))} a ${esc(fmt(x.checkout))}${nights?' • '+nights+' noites':''} • para 2 pessoas</p><div class="total">${money(x.total)}<small>${x.multiCity?'passagens + hospedagens + roteiro terrestre':'passagem + hospedagem'}</small></div></section>
+ <section class="hero"><span class="tag">⭐ Recomendação VOAÍ</span><h1>${esc(x.destination)} 🌎</h1><p>${esc(fmt(x.checkin))} a ${esc(fmt(x.checkout))}${nights?' • '+nights+' noites':''} • para ${x.people||2} viajante(s)</p><div class="total">${money(x.total)}<small>${x.multiCity?'passagens + hospedagens + roteiro terrestre':'passagem + hospedagem'}</small></div></section>
  <div class="section-title">Sua viagem em um só lugar</div>
  <section class="card"><h2>✈️ Passagem aérea</h2><div class="row"><span>Companhia</span><b>${esc(x.carrier||'Companhia aérea')}</b></div><div class="row"><span>Valor encontrado</span><b>${money(x.flight)}</b></div>${x.flightLink?`<div class="buttons"><a class="button secondary" target="_blank" rel="noopener" href="${esc(x.flightLink)}">Ver ida</a>${x.returnFlightLink?`<a class="button secondary" target="_blank" rel="noopener" href="${esc(x.returnFlightLink)}">Ver volta</a>`:''}</div>`:''}</section>
  ${x.multiCity&&x.stops?`<section class="card"><h2>🚆 Deslocamentos entre cidades</h2><p class="muted">O VOAÍ identificou um roteiro com várias cidades e priorizou ${esc(x.groundMode||'trem')}. Você pode comparar trem e ônibus pela Omio.</p>${x.trainSegments.map((t,i)=>`<div class="row"><span><b>${esc(t.from)} → ${esc(t.to)}</b><small class="muted" style="display:block">Trecho ${i+1} do roteiro</small></span><div style="display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end"><a class="button secondary" style="padding:8px 10px;min-width:112px" target="_blank" rel="noopener" href="${esc(t.trainLink||t.link)}">🚆 Trem</a><a class="button secondary" style="padding:8px 10px;min-width:112px" target="_blank" rel="noopener" href="${esc(t.busLink||t.link)}">🚌 Ônibus</a></div></div>`).join('')}<div class="omio-box"><div class="omio-title">🔎 Consulte o trecho na Omio</div><div id="omio-widget" data-omio-widget="true" data-partner-id="omiolps"></div></div></section>`:''}
  <section class="card"><h2>🏨 Hospedagem</h2>${x.multiCity&&x.stops?x.stops.map((s,i)=>`<div style="padding:${i?'14px 0 0':'0'};border-top:${i?'1px solid var(--line)':'0'}"><div class="muted">${esc(s.city?.name||s.city||'Cidade')}</div><div class="hotelname">${esc(s.hotel?.name||'Hospedagem disponível')}</div>${s.hotel?.rating?`<div class="rating">⭐ ${esc(s.hotel.rating)} avaliação</div>`:''}<div class="row"><span>Valor encontrado</span><b>${money(s.hotel?.amount||0)}</b></div>${s.hotel?.link?`<div class="buttons"><a class="button secondary" target="_blank" rel="noopener" href="${esc(s.hotel.link)}">Ver hospedagem</a></div>`:''}</div>`).join(''): `<div class="hotelname">${esc(x.hotelName||'Hospedagem disponível')}</div>${x.rating?`<div class="rating">⭐ ${esc(x.rating)} avaliação</div>`:''}<div class="row" style="margin-top:8px"><span>Valor encontrado</span><b>${money(x.hotel)}</b></div>${x.hotelLink?`<div class="buttons"><a class="button secondary" target="_blank" rel="noopener" href="${esc(x.hotelLink)}">Ver hospedagem</a></div>`:''}`}</section>
+ ${extrasHtml(x)}
  <section class="card"><h2>💰 Resumo</h2><div class="row"><span>Passagem</span><b>${money(x.flight)}</b></div><div class="row"><span>Hospedagem</span><b>${money(x.hotel)}</b></div><div class="row"><span>Total</span><b>${money(x.total)}</b></div><div class="buttons"><button type="button" class="button primary" onclick="escolher()">Quero essa viagem</button></div><div id="nextStep" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)"><div class="hotelname" style="font-size:16px">Sua escolha está pronta para continuar</div><p class="muted">O VOAÍ não faz a reserva diretamente. Use os parceiros abaixo para consultar disponibilidade e concluir a compra.</p><div class="buttons">${x.flightLink?`<a class="button primary" target="_blank" rel="noopener" href="${esc(x.flightLink)}">Continuar para passagem</a>`:''}${x.hotelLink?`<a class="button secondary" target="_blank" rel="noopener" href="${esc(x.hotelLink)}">Continuar para hotel</a>`:''}${x.multiCity&&x.trainSegments?x.trainSegments.flatMap(t=>[`<a class="button secondary" target="_blank" rel="noopener" href="${esc(t.trainLink||t.link)}">Ver trem ${esc(t.from)} → ${esc(t.to)}</a>`,`<a class="button secondary" target="_blank" rel="noopener" href="${esc(t.busLink||t.link)}">Ver ônibus ${esc(t.from)} → ${esc(t.to)}</a>`]).join(''):''}</div></div></section>
  <p class="notice">O VOAÍ encontrou esta combinação agora. Preços e disponibilidade podem mudar até a reserva. O botão acima reúne sua escolha; para reservar, use os links de passagem e hospedagem.</p>`;
 }
