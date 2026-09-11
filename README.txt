@@ -1,18 +1,18 @@
-VOAÍ V22 — motor conversacional de viagem
+VOAÍ V23 — MOTOR DINÂMICO DE VIAGENS
 
-Novidades desta versão:
-- preserva múltiplos destinos na ordem da conversa, incluindo Holanda/Amsterdam, Bruxelas, Paris e outros destinos
-- aceita roteiros com avião + trem + ônibus entre cidades
-- entende datas flexíveis e mais de um mês, como “maio ou junho”
-- “qualquer horário” não restringe a pesquisa de voos
-- mantém busca só de ida, horários preferidos, número de viajantes e origem
-- não apresenta preços fictícios quando a pesquisa real não está disponível
-- adiciona suporte para passeios/experiências e aluguel de carro no planejamento, com links de consulta aos parceiros
-- mantém Travelpayouts Drive no <head>
-
-Arquivos: api-plan.js, index.html, viagem.html, package.json, vercel.json, README.txt
+Objetivo desta versão:
+- O VOAÍ não depende de cadastrar cada destino manualmente.
+- Destinos desconhecidos são resolvidos dinamicamente pelo Google Flights Autocomplete via SerpApi.
+- A IA interpreta a conversa e pode sugerir destinos quando o usuário não sabe para onde ir.
+- Mais de uma cidade pedida vira roteiro multi-cidade automaticamente.
+- Datas de mês são pesquisadas em vários pontos do mês, em vez de apenas algumas datas fixas.
+- “Ano que vem” é preservado.
+- “Qualquer horário” remove a restrição de horário.
+- Preferências de horário são passadas à busca real e, se não houver resultado, a busca é ampliada.
+- O planejamento principal não inventa preços.
+- Passeios e aluguel de carro continuam disponíveis como extras do roteiro.
 
 IMPORTANTE:
-- O arquivo googlece076f25e9969ea4.html de verificação do Google Search Console não faz parte deste ZIP. NÃO apague esse arquivo do GitHub.
-- A SERPAPI_KEY deve permanecer configurada como variável de ambiente no Vercel.
-- Passeios e aluguel de carro nesta versão abrem páginas de consulta dos parceiros; preços ao vivo desses serviços exigem uma API/feed do parceiro ou integração específica.
+- Não apagar googlece076f25e9969ea4.html do repositório GitHub. Este arquivo não faz parte do ZIP definitivo.
+- A variável SERPAPI_KEY deve continuar configurada no Vercel.
+- A variável GEMINI_API_KEY ou GEMINI_KEY é opcional, mas recomendada para a compreensão conversacional.

@@ -183,6 +183,8 @@ function parseRequest(text,originInput,peopleInput){
   if(!month) month=(now.getMonth()+2)>12?1:now.getMonth()+2;
   if(!monthCandidates.length) monthCandidates.push(month);
   let year=month<=now.getMonth()+1?now.getFullYear()+1:now.getFullYear();
+  const nextYear=/\b(?:ano que vem|proximo ano|próximo ano|ano seguinte)\b/.test(s);
+  if(nextYear) year=now.getFullYear()+1;
   const monthYear=s.match(/(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s+(?:de\s+)?(20\d{2})\b/);
   if(monthYear)year=Number(monthYear[1]);
   let startDate=null,endDate=null;
@@ -301,7 +303,7 @@ destinations (array de textos, na ordem em que foram pedidos), country (texto ou
 beach (boolean), international (boolean), brazilOnly (boolean), train (boolean), bus (boolean), ground (boolean), shortFlight (boolean),
 flexibleDates (boolean), surprise (boolean), oneWay (boolean), timePreference (texto ou null), tours (boolean), carRental (boolean), anyTime (boolean),
 preferences (array de textos), hardConstraints (array de textos), softPreferences (array de textos),
-conflicts (array de textos), needsQuestion (boolean), question (texto curto ou null),
+conflicts (array de textos), suggestedDestinations (array de textos), needsQuestion (boolean), question (texto curto ou null),
 recommendationMode ("recommend" | "compare" | "explain" | "search" | "clarify").
 
 Regras importantes:
@@ -314,7 +316,10 @@ Regras importantes:
 - Se uma preferência entrar em conflito com orçamento ou tempo de voo, não falhe: registre o conflito e permita alternativas.
 - Se pedir país/região, preserve esse escopo. Não invente cidades como se fossem uma exigência do usuário.
 - Se pedir trem ou ônibus sem cidades, marque train e/ou bus=true, mas não invente um roteiro como fato.
-- Se pedir várias cidades, preserve a ordem.
+- Se pedir várias cidades, preserve a ordem e marque multiCity=true.
+- Se houver mais de uma cidade explicitamente pedida, multiCity=true mesmo que o usuário não use a expressão “multi-city”.
+- Se o usuário não escolher um destino e pedir ajuda para decidir, preencha suggestedDestinations com até 5 destinos plausíveis, coerentes com orçamento, época, origem e preferências. Não invente preços.
+- Se o usuário disser um destino pouco conhecido, preserve exatamente o nome; o sistema fará a validação geográfica por autocomplete.
 - Se disser “só ida”, “somente ida”, “apenas ida” ou “sem volta”, oneWay=true.
 - Se disser “à tarde”, “à noite”, “tarde/noite” ou “depois das 14h”, registre a preferência de horário em timePreference. Se disser “qualquer horário”, anyTime=true e não restrinja o horário.
 - Se pedir passeios, atrações, tours ou o que fazer, tours=true. Se pedir carro/aluguel de carro, carRental=true.
@@ -395,15 +400,29 @@ async function applyAI(req,ai,sourceText=""){
   req.needsQuestion=!!ai.needsQuestion;
   req.question=ai.question||null;
   const names=Array.isArray(ai.destinations)?ai.destinations.filter(Boolean):[];
+  const suggested=Array.isArray(ai.suggestedDestinations)?ai.suggestedDestinations.filter(Boolean).slice(0,5):[];
   const resolved=[];
   for(const name of names){
     const n=norm(name); const known=Object.values(cities).find(c=>norm(c.name)===n);
     if(known){if(known.iata!==req.originIata)resolved.push({...known,id:known.iata});continue;}
     try{const c=await autocompleteCity(name);if(c&&c.iata!==req.originIata)resolved.push({...c,id:c.iata});}catch(e){}
   }
-  // A IA só pode transformar as cidades em roteiro multi-cidade quando ela realmente marcou multiCity=true.
-  // Isso evita que um pedido simples como “Portugal em outubro” vire automaticamente Lisboa → Porto.
-  if(resolved.length && ai.multiCity===true){req.multiCity=uniqueById(resolved).slice(0,6);req.explicit=req.multiCity;}
+  // Cidades explicitamente pedidas viram roteiro quando há duas ou mais, sem exigir uma palavra-chave técnica.
+  if(resolved.length){
+    req.explicit=uniqueById(resolved).slice(0,6);
+    if((ai.multiCity===true || resolved.length>=2) && req.explicit.length>=2){ req.multiCity=req.explicit; }
+  }
+  // Para pedidos abertos, a IA pode sugerir destinos que serão validados pelo autocomplete.
+  if(!req.explicit.length && suggested.length){
+    const suggestedResolved=[];
+    for(const name of suggested){
+      try{const c=await autocompleteCity(name);if(c&&c.iata!==req.originIata)suggestedResolved.push({...c,id:c.iata,suggested:true});}catch(e){}
+    }
+    if(suggestedResolved.length){
+      req.suggestedDestinations=uniqueById(suggestedResolved).slice(0,5);
+      req.explicit=req.suggestedDestinations;
+    }
+  }
   if(ai.bus===true) req.bus=true;
   req.ground=!!(req.train||req.bus);
   if(Array.isArray(ai.preferences) && localTrain) {
@@ -424,12 +443,15 @@ function dateOptions(req){
   }
   const out=[];
   const months=Array.isArray(req.months)&&req.months.length?req.months:[req.month];
+  const days=req.daysExplicit?req.days:7;
   for(const m of months){
-    for(const d of [3,5,10,12,17,19,24,26]){
-      if(validDay(req.year,m,d)){const start=dateISO(req.year,m,d),e=new Date(req.year,m-1,d+req.days);out.push({start,end:dateISO(e.getFullYear(),e.getMonth()+1,e.getDate())});}
+    const last=new Date(req.year,m,0).getDate();
+    const sample=[1,4,7,10,13,16,19,22,25,28].filter(d=>d<=last);
+    for(const d of sample){
+      if(validDay(req.year,m,d)){const start=dateISO(req.year,m,d),e=new Date(req.year,m-1,d+days);out.push({start,end:dateISO(e.getFullYear(),e.getMonth()+1,e.getDate())});}
     }
   }
-  return out;
+  return out.slice(0,20);
 }
 
 async function serp(params){
@@ -494,10 +516,15 @@ async function resolveExplicit(req,text){
 }
 function monthWord(s){return /^(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)$/.test(s);}
 
-async function realFlight(origin,dest,start,end,people,adults,children){
-  const arrival=dest.iata||dest.id;const data=await serp({engine:"google_flights",departure_id:origin,arrival_id:arrival,outbound_date:start,return_date:end,type:1,travel_class:1,adults:adults||people,children:children||0,currency:"BRL",gl:"br",hl:"pt",deep_search:false});
-  const options=[...(data?.best_flights||[]),...(data?.other_flights||[])].filter(x=>x?.price!=null).sort((a,b)=>Number(a.price)-Number(b.price));const o=options[0];if(!o)return null;const first=o.flights?.[0];
-  return {amount:Number(o.price),carrier:first?.airline||"Companhia aérea",logo:first?.airline_logo||null,duration:o.total_duration||null,bookingToken:o.booking_token||null,googleLink:`https://www.google.com/travel/flights?hl=pt-BR&curr=BRL&q=${encodeURIComponent(`${origin} ${arrival} ${start} ${end}`)}`};
+async function realFlight(origin,dest,start,end,people,adults,children,timePreference=null){
+  const arrival=dest.iata||dest.id;
+  const base={engine:"google_flights",departure_id:origin,arrival_id:arrival,outbound_date:start,return_date:end,type:1,travel_class:1,adults:adults||people,children:children||0,currency:"BRL",gl:"br",hl:"pt",deep_search:false};
+  const run=async(withTime)=>{const p={...base};if(withTime&&timePreference)p.outbound_times=`${timePreference.start},${timePreference.end}`;return serp(p);};
+  let data=await run(!!timePreference),usedPreferred=!!timePreference;
+  let options=[...(data?.best_flights||[]),...(data?.other_flights||[])].filter(x=>x?.price!=null).sort((a,b)=>Number(a.price)-Number(b.price));
+  if(!options.length&&timePreference){data=await run(false);usedPreferred=false;options=[...(data?.best_flights||[]),...(data?.other_flights||[])].filter(x=>x?.price!=null).sort((a,b)=>Number(a.price)-Number(b.price));}
+  const o=options[0];if(!o)return null;const first=o.flights?.[0];
+  return {amount:Number(o.price),carrier:first?.airline||"Companhia aérea",logo:first?.airline_logo||null,duration:o.total_duration||null,bookingToken:o.booking_token||null,preferredTimeMatched:usedPreferred,googleLink:`https://www.google.com/travel/flights?hl=pt-BR&curr=BRL&q=${encodeURIComponent(`${origin} ${arrival} ${start} ${end}`)}`};
 }
 async function realOneWayFlight(origin,dest,start,people,adults,children,timePreference=null){
   const arrival=dest.iata||dest.id;
@@ -612,8 +639,8 @@ async function multiCityPlan(req,dt,citiesReq){
   const returnISO=dateISO(returnDate.getFullYear(),returnDate.getMonth()+1,returnDate.getDate());
   const first=citiesReq[0], last=citiesReq[citiesReq.length-1];
   const [outbound,returnFlight]=await Promise.all([
-    realOneWayFlight(req.originIata,first,dt.start,req.people,req.adults,req.children).catch(()=>null),
-    realOneWayFlight(last,{iata:req.originIata,id:req.originIata,name:"Origem"},returnISO,req.people,req.adults,req.children).catch(()=>null)
+    realOneWayFlight(req.originIata,first,dt.start,req.people,req.adults,req.children,req.anyTime?null:req.timePreference).catch(()=>null),
+    realOneWayFlight(last,{iata:req.originIata,id:req.originIata,name:"Origem"},returnISO,req.people,req.adults,req.children,req.anyTime?null:req.timePreference).catch(()=>null)
   ]);
   // Se o voo de ida funcionar, não descartamos o roteiro só porque um dos trechos aéreos
   // ou algum hotel não respondeu. Mostramos o que foi encontrado e deixamos os links para consulta.
@@ -841,8 +868,11 @@ async function handler(event){
     }
 
     if(req.multiCity?.length>=2){
-      const candidates=[];for(const dt of dates){try{const plan=await multiCityPlan(req,dt,req.multiCity);if(plan)candidates.push(plan);}catch(e){}}
-      candidates.sort((a,b)=>a.total-b.total);const within=req.budget?candidates.filter(x=>x.total<=req.budget):[];return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",parsed:req,results:(within.length?within:candidates).slice(0,4)})};
+      const candidates=[];for(const dt of dates.slice(0,10)){try{const plan=await multiCityPlan(req,dt,req.multiCity);if(plan)candidates.push(plan);}catch(e){}}
+      candidates.sort((a,b)=>a.total-b.total);const within=req.budget?candidates.filter(x=>x.total<=req.budget):[];
+      if(candidates.length)return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",parsed:req,results:(within.length?within:candidates).slice(0,4)})};
+      // Se uma combinação de datas/trechos não respondeu, não trate isso como inexistência do destino.
+      req.multiCity=[];
     }
 
     let candidates=req.explicit.length?req.explicit.filter(c=>c.iata!==req.originIata):[];
@@ -867,7 +897,7 @@ async function handler(event){
       else if(req.brazilOnly)candidates=broadBrazil.map(k=>cities[k]).filter(Boolean);
       else {const discovered=await discoverDestinations(req);candidates=discovered.length?discovered:[...broadBrazil,...broadInternational].map(k=>cities[k]).filter(Boolean);}
     }
-    candidates=uniqueById(candidates.map(c=>({...c,id:c.id||c.iata}))).slice(0,req.region==="europe"?8:16);
+    candidates=uniqueById(candidates.map(c=>({...c,id:c.id||c.iata}))).slice(0,req.explicit.length?12:(req.region==="europe"?10:16));
 
     // Para pedidos abertos de Europa, use primeiro o Google Travel Explore para encontrar datas flexíveis.
     // Isso evita que a busca fique presa às quatro datas fixas do calendário quando existe uma tarifa em outra semana.
@@ -880,7 +910,7 @@ async function handler(event){
           if(!d.start_date||!d.end_date||!iata)return null;
           const dest={name:d.name,country:d.country||"",iata};
           try{
-            const f=await realFlight(req.originIata,dest,d.start_date,d.end_date,req.people);
+            const f=await realFlight(req.originIata,dest,d.start_date,d.end_date,req.people,req.adults,req.children,req.anyTime?null:req.timePreference);
             if(!f)return null;
             const h=await realHotel(dest,d.start_date,d.end_date,req.people,req.children).catch(()=>null);
             const exploreHotel=Number(d.hotel_price||0);
@@ -896,7 +926,7 @@ async function handler(event){
       }catch(e){}
     }
 
-    const flightJobs=[];for(const dest of candidates)for(const dt of dates){flightJobs.push((async()=>{try{const f=await realFlight(req.originIata,dest,dt.start,dt.end,req.people,req.adults,req.children);return f?{dest,dt,f}:null;}catch(e){return null;}})());}
+    const flightJobs=[];for(const dest of candidates)for(const dt of dates){flightJobs.push((async()=>{try{const f=await realFlight(req.originIata,dest,dt.start,dt.end,req.people,req.adults,req.children,req.anyTime?null:req.timePreference);return f?{dest,dt,f}:null;}catch(e){return null;}})());}
     let flights=(await Promise.all(flightJobs)).filter(Boolean).sort((a,b)=>a.f.amount-b.f.amount).slice(0,14);
     const jobs=flights.map(async item=>{
       try{
