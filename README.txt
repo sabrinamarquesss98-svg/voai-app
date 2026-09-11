@@ -2,7 +2,7 @@ VOAÍ V23 — MOTOR DINÂMICO DE VIAGENS
 
 Objetivo desta versão:
 - O VOAÍ não depende de cadastrar cada destino manualmente.
-- Destinos desconhecidos são resolvidos dinamicamente pelo Google Flights Autocomplete via SerpApi.
+- Destinos desconhecidos são resolvidos dinamicamente pelo Google Flights Autocomplete via SerpApi, aceitando tanto IATA quanto Knowledge Graph IDs e múltiplos aeroportos por cidade.
 - A IA interpreta a conversa e pode sugerir destinos quando o usuário não sabe para onde ir.
 - Mais de uma cidade pedida vira roteiro multi-cidade automaticamente.
 - Datas de mês são pesquisadas em vários pontos do mês, em vez de apenas algumas datas fixas.
@@ -16,3 +16,5 @@ IMPORTANTE:
 - Não apagar googlece076f25e9969ea4.html do repositório GitHub. Este arquivo não faz parte do ZIP definitivo.
 - A variável SERPAPI_KEY deve continuar configurada no Vercel.
 - A variável GEMINI_API_KEY ou GEMINI_KEY é opcional, mas recomendada para a compreensão conversacional.
+
+V24: correção estrutural do resolvedor geográfico. O autocomplete agora lê o formato real de sugestões do Google Flights, inclusive cidades pouco conhecidas como Chiang Mai, usando o kgmid da cidade e os aeroportos associados. Isso evita depender da lista fixa de cidades.

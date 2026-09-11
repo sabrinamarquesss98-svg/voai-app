@@ -389,7 +389,7 @@ async function applyAI(req,ai,sourceText=""){
   if(typeof ai.origin==='string' && ai.origin.trim()){
     const n=norm(ai.origin);
     const known=Object.values(cities).find(c=>norm(c.name)===n);
-    if(known) req.originIata=known.iata; else { try{ const c=await autocompleteCity(ai.origin); if(c) req.originIata=c.iata; }catch(e){} }
+    if(known){ req.originIata=known.iata; req.originSearchId=known.iata; } else { try{ const c=await autocompleteCity(ai.origin); if(c){ req.originIata=c.iata; req.originSearchId=c.searchId||c.iata; } }catch(e){} }
   }
   req.aiPreferences=Array.isArray(ai.preferences)?ai.preferences.slice(0,8):[];
   req.hardConstraints=Array.isArray(ai.hardConstraints)?ai.hardConstraints.slice(0,8):[];
@@ -461,18 +461,43 @@ async function serp(params){
 }
 
 async function autocompleteCity(query){
-  const data=await serp({engine:"google_flights_autocomplete",q:query,gl:"br",hl:"pt"});
-  const list=data?.suggestions||data?.results||[];
+  // O autocomplete do Google Flights não devolve necessariamente o IATA no campo
+  // principal. Para cidades pouco conhecidas ele normalmente devolve um Knowledge
+  // Graph ID (kgmid) e uma lista de aeroportos. O VOAÍ precisa aceitar os dois formatos.
+  const data=await serp({engine:"google_flights_autocomplete",q:String(query||"").trim(),gl:"br",hl:"pt",exclude_regions:true});
+  const list=Array.isArray(data?.suggestions)?data.suggestions:(data?.results||[]);
   for(const x of list){
-    const id=String(x?.id||x?.airport?.id||x?.location?.id||"").toUpperCase();
-    const name=x?.name||x?.city||x?.airport?.name||x?.location?.name;
-    // Para o Google Flights usamos somente códigos IATA válidos de 3 letras.
-    // Isso evita erros quando o autocomplete devolve IDs de países/regiões.
-    if(/^[A-Z]{3}$/.test(id)&&name){
-      return {id,name,country:x?.country||x?.airport?.country||"",iata:id};
-    }
+    const type=String(x?.type||"").toLowerCase();
+    if(type && type!=='city') continue;
+    const name=String(x?.name||x?.city||x?.airport?.name||x?.location?.name||"").trim();
+    const kgmid=String(x?.id||x?.location?.id||x?.city_id||"").trim();
+    const airports=Array.isArray(x?.airports)?x.airports:[];
+    const airportIds=airports.map(a=>String(a?.id||a?.airport?.id||"").toUpperCase()).filter(v=>/^[A-Z]{3}$/.test(v));
+    const directIata=String(x?.iata||x?.airport?.id||"").toUpperCase();
+    const iataList=[...new Set([directIata,...airportIds].filter(v=>/^[A-Z]{3}$/.test(v)))];
+    if(!name || (!kgmid && !iataList.length)) continue;
+    // Preferimos o kgmid da cidade: o Google Flights aceita location IDs e isso
+    // permite que uma cidade com vários aeroportos seja pesquisada corretamente.
+    const searchId=/^(\/m\/|\/g\/)/.test(kgmid)?kgmid:(iataList[0]||null);
+    if(!searchId) continue;
+    const cityName=name.split(',')[0].trim()||name;
+    return {
+      id:searchId,
+      searchId,
+      kgmid:/^(\/m\/|\/g\/)/.test(kgmid)?kgmid:null,
+      name:cityName,
+      displayName:name,
+      country:x?.country||((name.split(",").slice(1).join(",").trim())||x?.airport?.country||""),
+      iata:iataList[0]||searchId,
+      airportIds:iataList,
+      source:"google_flights_autocomplete"
+    };
   }
   return null;
+}
+
+function flightSearchId(place){
+  return place?.searchId || place?.kgmid || place?.iata || place?.id;
 }
 
 async function discoverDestinations(req){
@@ -517,7 +542,7 @@ async function resolveExplicit(req,text){
 function monthWord(s){return /^(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)$/.test(s);}
 
 async function realFlight(origin,dest,start,end,people,adults,children,timePreference=null){
-  const arrival=dest.iata||dest.id;
+  const arrival=flightSearchId(dest);
   const base={engine:"google_flights",departure_id:origin,arrival_id:arrival,outbound_date:start,return_date:end,type:1,travel_class:1,adults:adults||people,children:children||0,currency:"BRL",gl:"br",hl:"pt",deep_search:false};
   const run=async(withTime)=>{const p={...base};if(withTime&&timePreference)p.outbound_times=`${timePreference.start},${timePreference.end}`;return serp(p);};
   let data=await run(!!timePreference),usedPreferred=!!timePreference;
@@ -527,7 +552,7 @@ async function realFlight(origin,dest,start,end,people,adults,children,timePrefe
   return {amount:Number(o.price),carrier:first?.airline||"Companhia aérea",logo:first?.airline_logo||null,duration:o.total_duration||null,bookingToken:o.booking_token||null,preferredTimeMatched:usedPreferred,googleLink:`https://www.google.com/travel/flights?hl=pt-BR&curr=BRL&q=${encodeURIComponent(`${origin} ${arrival} ${start} ${end}`)}`};
 }
 async function realOneWayFlight(origin,dest,start,people,adults,children,timePreference=null){
-  const arrival=dest.iata||dest.id;
+  const arrival=flightSearchId(dest);
   const base={engine:"google_flights",departure_id:origin,arrival_id:arrival,outbound_date:start,type:2,travel_class:1,adults:adults||people,children:children||0,currency:"BRL",gl:"br",hl:"pt",deep_search:false,sort_by:2};
   const run=async(withTime)=>{
     const params={...base};
@@ -639,8 +664,8 @@ async function multiCityPlan(req,dt,citiesReq){
   const returnISO=dateISO(returnDate.getFullYear(),returnDate.getMonth()+1,returnDate.getDate());
   const first=citiesReq[0], last=citiesReq[citiesReq.length-1];
   const [outbound,returnFlight]=await Promise.all([
-    realOneWayFlight(req.originIata,first,dt.start,req.people,req.adults,req.children,req.anyTime?null:req.timePreference).catch(()=>null),
-    realOneWayFlight(last,{iata:req.originIata,id:req.originIata,name:"Origem"},returnISO,req.people,req.adults,req.children,req.anyTime?null:req.timePreference).catch(()=>null)
+    realOneWayFlight(req.originSearchId||req.originIata,first,dt.start,req.people,req.adults,req.children,req.anyTime?null:req.timePreference).catch(()=>null),
+    realOneWayFlight(last,{iata:req.originIata,id:req.originIata,searchId:req.originSearchId||req.originIata,name:"Origem"},returnISO,req.people,req.adults,req.children,req.anyTime?null:req.timePreference).catch(()=>null)
   ]);
   // Se o voo de ida funcionar, não descartamos o roteiro só porque um dos trechos aéreos
   // ou algum hotel não respondeu. Mostramos o que foi encontrado e deixamos os links para consulta.
@@ -858,7 +883,7 @@ async function handler(event){
       oneWayCandidates=uniqueById(oneWayCandidates).slice(0,12);
       const exactStart=req.startDate||dateOptions(req)[0]?.start;
       if(exactStart&&oneWayCandidates.length){
-        const jobs=oneWayCandidates.map(async dest=>{try{const f=await realOneWayFlight(req.originIata,dest,exactStart,req.people,req.adults,req.children,req.timePreference);return f?{destination:dest.name,country:dest.country,checkin:exactStart,checkout:null,flight:f.amount,hotel:0,total:f.amount,carrier:f.carrier,airlineLogo:f.logo,people:req.people,flightLink:f.googleLink,departureTime:f.departureTime,arrivalTime:f.arrivalTime,preferredTimeMatched:f.preferredTimeMatched,timePreference:req.timePreference,demo:false,currency:'BRL',flightOnly:true,extras:extrasForDestination(req,dest.name)}:null;}catch(e){return null;}});
+        const jobs=oneWayCandidates.map(async dest=>{try{const f=await realOneWayFlight(req.originSearchId||req.originIata,dest,exactStart,req.people,req.adults,req.children,req.timePreference);return f?{destination:dest.name,country:dest.country,checkin:exactStart,checkout:null,flight:f.amount,hotel:0,total:f.amount,carrier:f.carrier,airlineLogo:f.logo,people:req.people,flightLink:f.googleLink,departureTime:f.departureTime,arrivalTime:f.arrivalTime,preferredTimeMatched:f.preferredTimeMatched,timePreference:req.timePreference,demo:false,currency:'BRL',flightOnly:true,extras:extrasForDestination(req,dest.name)}:null;}catch(e){return null;}});
         let oneWayResults=(await Promise.all(jobs)).filter(Boolean).sort((a,b)=>a.total-b.total);
         if(req.budget){const within=oneWayResults.filter(x=>x.total<=req.budget);if(within.length)oneWayResults=within;}
         if(oneWayResults.length){
@@ -910,7 +935,7 @@ async function handler(event){
           if(!d.start_date||!d.end_date||!iata)return null;
           const dest={name:d.name,country:d.country||"",iata};
           try{
-            const f=await realFlight(req.originIata,dest,d.start_date,d.end_date,req.people,req.adults,req.children,req.anyTime?null:req.timePreference);
+            const f=await realFlight(req.originSearchId||req.originIata,dest,d.start_date,d.end_date,req.people,req.adults,req.children,req.anyTime?null:req.timePreference);
             if(!f)return null;
             const h=await realHotel(dest,d.start_date,d.end_date,req.people,req.children).catch(()=>null);
             const exploreHotel=Number(d.hotel_price||0);
@@ -926,7 +951,7 @@ async function handler(event){
       }catch(e){}
     }
 
-    const flightJobs=[];for(const dest of candidates)for(const dt of dates){flightJobs.push((async()=>{try{const f=await realFlight(req.originIata,dest,dt.start,dt.end,req.people,req.adults,req.children,req.anyTime?null:req.timePreference);return f?{dest,dt,f}:null;}catch(e){return null;}})());}
+    const flightJobs=[];for(const dest of candidates)for(const dt of dates){flightJobs.push((async()=>{try{const f=await realFlight(req.originSearchId||req.originIata,dest,dt.start,dt.end,req.people,req.adults,req.children,req.anyTime?null:req.timePreference);return f?{dest,dt,f}:null;}catch(e){return null;}})());}
     let flights=(await Promise.all(flightJobs)).filter(Boolean).sort((a,b)=>a.f.amount-b.f.amount).slice(0,14);
     const jobs=flights.map(async item=>{
       try{
