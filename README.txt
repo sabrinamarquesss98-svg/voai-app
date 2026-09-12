@@ -10,3 +10,7 @@ GET /api/plan?diagnostic=1
 GET /api/plan?diagnostic=1&test=1
 
 O diagnóstico nunca devolve a chave da SerpApi ou da Gemini; apenas informa se a variável existe e, no teste, o erro sanitizado da API.
+
+
+V26: correção do adaptador Vercel para repassar queryStringParameters ao diagnóstico GET.
+Isso permite que /api/plan?diagnostic=1&test=1 mostre se SERPAPI_KEY e GEMINI_API_KEY estão disponíveis e se o teste CGR→GRU responde.

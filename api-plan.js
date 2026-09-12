@@ -1014,7 +1014,8 @@ module.exports = async function vercelHandler(req, res) {
   try {
     const event = {
       httpMethod: req.method,
-      body: typeof req.body === "string" ? req.body : JSON.stringify(req.body || {})
+      body: typeof req.body === "string" ? req.body : JSON.stringify(req.body || {}),
+      queryStringParameters: req.query || {}
     };
     const out = await handler(event);
     const headers = out?.headers || {};
