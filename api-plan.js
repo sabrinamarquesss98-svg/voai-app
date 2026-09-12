@@ -454,9 +454,17 @@ function dateOptions(req){
   return out.slice(0,20);
 }
 
+const SERP_CACHE = globalThis.__VOAI_SERP_CACHE || new Map();
+globalThis.__VOAI_SERP_CACHE = SERP_CACHE;
+const SERP_CACHE_TTL_MS = 2 * 60 * 1000;
+
 async function serp(params){
   const key=process.env.SERPAPI_KEY;
   if(!key) { const e=new Error("SERPAPI_KEY ausente no ambiente desta função"); e.code="SERPAPI_KEY_MISSING"; throw e; }
+  const cacheParams={...params};
+  const cacheKey=JSON.stringify(Object.keys(cacheParams).sort().reduce((o,k)=>(o[k]=cacheParams[k],o),{}));
+  const cached=SERP_CACHE.get(cacheKey);
+  if(cached && (Date.now()-cached.ts)<SERP_CACHE_TTL_MS) return cached.data;
   const url=new URL("https://serpapi.com/search.json");
   Object.entries({...params,api_key:key}).forEach(([k,v])=>url.searchParams.set(k,String(v)));
   const r=await fetch(url,{headers:{Accept:"application/json"}});
@@ -468,6 +476,12 @@ async function serp(params){
     e.code=data?.error_code||`SERPAPI_HTTP_${r.status}`;
     e.httpStatus=r.status;
     throw e;
+  }
+  SERP_CACHE.set(cacheKey,{ts:Date.now(),data});
+  // Evita crescimento indefinido do cache em funções aquecidas.
+  if(SERP_CACHE.size>80){
+    const first=SERP_CACHE.keys().next().value;
+    if(first) SERP_CACHE.delete(first);
   }
   return data;
 }
@@ -918,7 +932,7 @@ async function handler(event){
       if(!oneWayCandidates.length){
         try{ const discovered=await discoverDestinations(req); oneWayCandidates=discovered.filter(c=>c.iata!==req.originIata); }catch(e){}
       }
-      oneWayCandidates=uniqueById(oneWayCandidates).slice(0,12);
+      oneWayCandidates=uniqueById(oneWayCandidates).slice(0,6);
       const exactStart=req.startDate||dateOptions(req)[0]?.start;
       if(exactStart&&oneWayCandidates.length){
         const jobs=oneWayCandidates.map(async dest=>{try{const f=await realOneWayFlight(req.originSearchId||req.originIata,dest,exactStart,req.people,req.adults,req.children,req.timePreference);return f?{destination:dest.name,country:dest.country,checkin:exactStart,checkout:null,flight:f.amount,hotel:0,total:f.amount,carrier:f.carrier,airlineLogo:f.logo,people:req.people,flightLink:f.googleLink,departureTime:f.departureTime,arrivalTime:f.arrivalTime,preferredTimeMatched:f.preferredTimeMatched,timePreference:req.timePreference,demo:false,currency:'BRL',flightOnly:true,extras:extrasForDestination(req,dest.name)}:null;}catch(e){return null;}});
@@ -931,7 +945,8 @@ async function handler(event){
     }
 
     if(req.multiCity?.length>=2){
-      const candidates=[];for(const dt of dates.slice(0,10)){try{const plan=await multiCityPlan(req,dt,req.multiCity);if(plan)candidates.push(plan);}catch(e){}}
+      const multiDates=dates.slice(0, req.startDate ? 1 : 2);
+      const candidates=[];for(const dt of multiDates){try{const plan=await multiCityPlan(req,dt,req.multiCity);if(plan)candidates.push(plan);}catch(e){}}
       candidates.sort((a,b)=>a.total-b.total);const within=req.budget?candidates.filter(x=>x.total<=req.budget):[];
       if(candidates.length)return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",parsed:req,results:(within.length?within:candidates).slice(0,4)})};
       // Se uma combinação de datas/trechos não respondeu, não trate isso como inexistência do destino.
@@ -960,7 +975,10 @@ async function handler(event){
       else if(req.brazilOnly)candidates=broadBrazil.map(k=>cities[k]).filter(Boolean);
       else {const discovered=await discoverDestinations(req);candidates=discovered.length?discovered:[...broadBrazil,...broadInternational].map(k=>cities[k]).filter(Boolean);}
     }
-    candidates=uniqueById(candidates.map(c=>({...c,id:c.id||c.iata}))).slice(0,req.explicit.length?12:(req.region==="europe"?10:16));
+    // Limite deliberado: cada destino/data gera uma consulta de voo.
+    // Preferimos poucas pesquisas reais e úteis a dezenas de chamadas redundantes.
+    const candidateLimit=req.explicit.length?3:(req.surprise?5:4);
+    candidates=uniqueById(candidates.map(c=>({...c,id:c.id||c.iata}))).slice(0,candidateLimit);
 
     // Para pedidos abertos de Europa, use primeiro o Google Travel Explore para encontrar datas flexíveis.
     // Isso evita que a busca fique presa às quatro datas fixas do calendário quando existe uma tarifa em outra semana.
@@ -989,11 +1007,31 @@ async function handler(event){
       }catch(e){}
     }
 
-    const flightJobs=[];for(const dest of candidates)for(const dt of dates){flightJobs.push((async()=>{try{const f=await realFlight(req.originSearchId||req.originIata,dest,dt.start,dt.end,req.people,req.adults,req.children,req.anyTime?null:req.timePreference);return f?{dest,dt,f}:null;}catch(e){return null;}})());}
-    let flights=(await Promise.all(flightJobs)).filter(Boolean).sort((a,b)=>a.f.amount-b.f.amount).slice(0,14);
+    const searchDates=dates.slice(0, req.startDate ? 1 : (req.months?.length>1 ? 2 : 2));
+    const flightJobs=[];
+    for(const dest of candidates) for(const dt of searchDates){
+      flightJobs.push((async()=>{
+        try{
+          const f=await realFlight(req.originSearchId||req.originIata,dest,dt.start,dt.end,req.people,req.adults,req.children,req.anyTime?null:req.timePreference);
+          return f?{dest,dt,f}:null;
+        }catch(e){return null;}
+      })());
+    }
+    let flights=(await Promise.all(flightJobs)).filter(Boolean).sort((a,b)=>a.f.amount-b.f.amount).slice(0,8);
+
+    // Hotéis são a parte mais cara em volume de consultas. Só enriquecemos os 4 voos
+    // mais promissores; os demais continuam clicáveis para consulta no parceiro.
+    const hotelEligible=flights.slice(0,4);
+    const hotelMap=new Map();
+    await Promise.all(hotelEligible.map(async item=>{
+      try{
+        const h=await realHotel(item.dest,item.dt.start,item.dt.end,req.people,req.children);
+        hotelMap.set(`${item.dest.iata}|${item.dt.start}|${item.dt.end}`,h);
+      }catch(e){}
+    }));
     const jobs=flights.map(async item=>{
       try{
-        const h=await realHotel(item.dest,item.dt.start,item.dt.end,req.people,req.children).catch(()=>null);
+        const h=hotelMap.get(`${item.dest.iata}|${item.dt.start}|${item.dt.end}`)||null;
         return {destination:item.dest.name,country:item.dest.country,checkin:item.dt.start,checkout:item.dt.end,flight:item.f.amount,hotel:h?.amount||0,total:item.f.amount+(h?.amount||0),carrier:item.f.carrier,airlineLogo:item.f.logo,hotelName:h?.name||null,rating:h?.rating||null,flightLink:item.f.googleLink,hotelLink:h?.link||null,demo:false,currency:"BRL",hotelUnavailable:!h,people:req.people,extras:extrasForDestination(req,item.dest.name)};
       }catch(e){
         return {destination:item.dest.name,country:item.dest.country,checkin:item.dt.start,checkout:item.dt.end,flight:item.f.amount,hotel:0,total:item.f.amount,carrier:item.f.carrier,airlineLogo:item.f.logo,flightLink:item.f.googleLink,demo:false,currency:"BRL",hotelUnavailable:true,people:req.people,extras:extrasForDestination(req,item.dest.name)};
