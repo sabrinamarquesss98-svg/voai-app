@@ -492,88 +492,186 @@ function safeError(e){
   return msg.length>240?msg.slice(0,240):msg;
 }
 
-async function autocompleteCity(query){
-  // O autocomplete do Google Flights não devolve necessariamente o IATA no campo
-  // principal. Para cidades pouco conhecidas ele normalmente devolve um Knowledge
-  // Graph ID (kgmid) e uma lista de aeroportos. O VOAÍ precisa aceitar os dois formatos.
-  const data=await serp({engine:"google_flights_autocomplete",q:String(query||"").trim(),gl:"br",hl:"pt",exclude_regions:true});
-  const list=Array.isArray(data?.suggestions)?data.suggestions:(data?.results||[]);
-  for(const x of list){
-    const type=String(x?.type||"").toLowerCase();
-    if(type && type!=='city') continue;
-    const name=String(x?.name||x?.city||x?.airport?.name||x?.location?.name||"").trim();
-    const kgmid=String(x?.id||x?.location?.id||x?.city_id||"").trim();
-    const airports=Array.isArray(x?.airports)?x.airports:[];
-    const airportIds=airports.map(a=>String(a?.id||a?.airport?.id||"").toUpperCase()).filter(v=>/^[A-Z]{3}$/.test(v));
-    const directIata=String(x?.iata||x?.airport?.id||"").toUpperCase();
-    const iataList=[...new Set([directIata,...airportIds].filter(v=>/^[A-Z]{3}$/.test(v)))];
-    if(!name || (!kgmid && !iataList.length)) continue;
-    // Preferimos o kgmid da cidade: o Google Flights aceita location IDs e isso
-    // permite que uma cidade com vários aeroportos seja pesquisada corretamente.
-    const searchId=/^(\/m\/|\/g\/)/.test(kgmid)?kgmid:(iataList[0]||null);
-    if(!searchId) continue;
-    const cityName=name.split(',')[0].trim()||name;
-    return {
-      id:searchId,
-      searchId,
-      kgmid:/^(\/m\/|\/g\/)/.test(kgmid)?kgmid:null,
-      name:cityName,
-      displayName:name,
-      country:x?.country||((name.split(",").slice(1).join(",").trim())||x?.airport?.country||""),
-      iata:iataList[0]||searchId,
-      airportIds:iataList,
-      source:"google_flights_autocomplete"
-    };
+const TP_CACHE = globalThis.__VOAI_TP_CACHE || new Map();
+globalThis.__VOAI_TP_CACHE = TP_CACHE;
+const TP_CACHE_TTL_MS = 5 * 60 * 1000;
+
+async function travelpayoutsPlaces(query){
+  const term=String(query||'').trim();
+  if(!term) return null;
+  const url=new URL('https://autocomplete.travelpayouts.com/places2');
+  url.searchParams.set('term',term);
+  url.searchParams.set('locale','pt');
+  url.searchParams.append('types[]','city');
+  url.searchParams.append('types[]','airport');
+  const r=await fetch(url,{headers:{Accept:'application/json'}});
+  if(!r.ok) throw new Error(`Travelpayouts autocomplete HTTP ${r.status}`);
+  const data=await r.json();
+  const list=Array.isArray(data)?data:[];
+  const city=list.find(x=>String(x?.type||'').toLowerCase()==='city') || list[0];
+  if(!city?.code) return null;
+  return {id:city.code,searchId:city.code,name:city.name||city.city_name||term,displayName:city.name||term,country:city.country_name||'',iata:String(city.code).toUpperCase(),airportIds:[String(city.code).toUpperCase()],source:'travelpayouts_autocomplete'};
+}
+
+async function travelpayoutsFlight(origin,dest,start,end,people,adults,children,timePreference=null,oneWay=false){
+  const token=process.env.TRAVELPAYOUTS_API_TOKEN;
+  if(!token) return null;
+  const departure=String(origin||'').toUpperCase();
+  const destination=String(flightSearchId(dest)||dest?.iata||'').toUpperCase();
+  if(!/^[A-Z]{3}$/.test(departure)||!/^[A-Z]{3}$/.test(destination)) return null;
+  const key=JSON.stringify({departure,destination,start,end,oneWay});
+  const cached=TP_CACHE.get(key);
+  let data=cached && (Date.now()-cached.ts)<TP_CACHE_TTL_MS ? cached.data : null;
+  if(!data){
+    const url=new URL('https://api.travelpayouts.com/aviasales/v3/prices_for_dates');
+    url.searchParams.set('origin',departure);
+    url.searchParams.set('destination',destination);
+    url.searchParams.set('departure_at',start);
+    if(!oneWay && end) url.searchParams.set('return_at',end);
+    url.searchParams.set('one_way',oneWay?'true':'false');
+    url.searchParams.set('sorting','price');
+    url.searchParams.set('direct','false');
+    url.searchParams.set('cy','BRL');
+    url.searchParams.set('market','br');
+    url.searchParams.set('limit','30');
+    url.searchParams.set('page','1');
+    url.searchParams.set('token',token);
+    const r=await fetch(url,{headers:{Accept:'application/json'}});
+    let body=null; try{body=await r.json();}catch(e){}
+    if(!r.ok || body?.success===false){
+      const e=new Error(String(body?.error||`Travelpayouts HTTP ${r.status}`));
+      e.code=`TRAVELPAYOUTS_HTTP_${r.status}`; e.httpStatus=r.status; throw e;
+    }
+    data=body;
+    TP_CACHE.set(key,{ts:Date.now(),data});
+    if(TP_CACHE.size>60){const first=TP_CACHE.keys().next().value;if(first)TP_CACHE.delete(first);}
   }
-  return null;
+  const rows=Array.isArray(data?.data)?data.data:[];
+  if(!rows.length) return null;
+  const normalized=rows.map(x=>({
+    amount:Number(x.value),
+    departureAt:x.departure_at||x.depart_date||null,
+    returnAt:x.return_at||x.return_date||null,
+    transfers:Number.isFinite(Number(x.number_of_changes))?Number(x.number_of_changes):null,
+    duration:x.duration||null,
+    actual:x.actual,
+    airline:x.airline||null,
+    link:x.ticket_link||x.link||null
+  })).filter(x=>Number.isFinite(x.amount)).sort((a,b)=>a.amount-b.amount);
+  if(!normalized.length) return null;
+  let chosen=normalized[0], preferredTimeMatched=false;
+  if(timePreference){
+    const inWindow=normalized.filter(x=>{
+      const m=String(x.departureAt||'').match(/T(\d{2}):/); if(!m) return false;
+      const hour=Number(m[1]); return hour>=timePreference.start && hour<timePreference.end;
+    });
+    if(inWindow.length){chosen=inWindow[0];preferredTimeMatched=true;}
+  }
+  return {
+    amount:chosen.amount,
+    carrier:chosen.airline||'Aviasales',
+    logo:chosen.airline?`https://pics.avs.io/200/80/${encodeURIComponent(chosen.airline)}.png`:null,
+    duration:chosen.duration||null,
+    bookingToken:null,
+    departureTime:chosen.departureAt||null,
+    arrivalTime:null,
+    preferredTimeMatched,
+    transfers:chosen.transfers,
+    source:'travelpayouts',
+    cachedPrice:chosen.actual===false,
+    googleLink:chosen.link ? `https://www.aviasales.com${chosen.link}` : 'https://aviasales.tpx.lv/t83Rci0X'
+  };
+}
+
+async function autocompleteCity(query){
+  try{
+
+    // O autocomplete do Google Flights não devolve necessariamente o IATA no campo
+    // principal. Para cidades pouco conhecidas ele normalmente devolve um Knowledge
+    // Graph ID (kgmid) e uma lista de aeroportos. O VOAÍ precisa aceitar os dois formatos.
+    const data=await serp({engine:"google_flights_autocomplete",q:String(query||"").trim(),gl:"br",hl:"pt",exclude_regions:true});
+    const list=Array.isArray(data?.suggestions)?data.suggestions:(data?.results||[]);
+    for(const x of list){
+      const type=String(x?.type||"").toLowerCase();
+      if(type && type!=='city') continue;
+      const name=String(x?.name||x?.city||x?.airport?.name||x?.location?.name||"").trim();
+      const kgmid=String(x?.id||x?.location?.id||x?.city_id||"").trim();
+      const airports=Array.isArray(x?.airports)?x.airports:[];
+      const airportIds=airports.map(a=>String(a?.id||a?.airport?.id||"").toUpperCase()).filter(v=>/^[A-Z]{3}$/.test(v));
+      const directIata=String(x?.iata||x?.airport?.id||"").toUpperCase();
+      const iataList=[...new Set([directIata,...airportIds].filter(v=>/^[A-Z]{3}$/.test(v)))];
+      if(!name || (!kgmid && !iataList.length)) continue;
+      // Preferimos o kgmid da cidade: o Google Flights aceita location IDs e isso
+      // permite que uma cidade com vários aeroportos seja pesquisada corretamente.
+      const searchId=/^(\/m\/|\/g\/)/.test(kgmid)?kgmid:(iataList[0]||null);
+      if(!searchId) continue;
+      const cityName=name.split(',')[0].trim()||name;
+      return {
+        id:searchId,
+        searchId,
+        kgmid:/^(\/m\/|\/g\/)/.test(kgmid)?kgmid:null,
+        name:cityName,
+        displayName:name,
+        country:x?.country||((name.split(",").slice(1).join(",").trim())||x?.airport?.country||""),
+        iata:iataList[0]||searchId,
+        airportIds:iataList,
+        source:"google_flights_autocomplete"
+      };
+    }
+    const fallback=await travelpayoutsPlaces(query);
+    return fallback || null;
+  }catch(e){
+    try{return await travelpayoutsPlaces(query);}catch(e2){return null;}
+  }
 }
 
 function flightSearchId(place){
-  return place?.searchId || place?.kgmid || place?.iata || place?.id;
-}
+    return place?.searchId || place?.kgmid || place?.iata || place?.id;
+  }
 
 async function discoverDestinations(req){
-  // Busca aberta: o próprio Google Travel devolve destinos de vários países, sem depender de uma lista fixa.
-  try{
-    const params={engine:"google_travel_explore",departure_id:req.originIata,month:req.month,travel_duration:req.days<=4?1:req.days<=10?2:3,travel_class:1,currency:"BRL",gl:"br",hl:"pt"}; if(req.region==="europe") params.arrival_area_id="/m/02j9z"; const data=await serp(params);
-    const found=(data?.destinations||[]).map(d=>({id:d.destination_id||d.id,name:d.name,country:d.country||"",iata:d.destination_id||d.id,tags:["discover"]})).filter(x=>x.id&&x.name);
-    return uniqueById(found);
-  }catch(e){return [];}
-}
-
-async function resolveExplicit(req,text){
-  const s=String(text||"");
-  // Preserva a ordem em que as cidades aparecem no pedido do usuário.
-  const known=[];
-  for(const [key,c] of Object.entries(cities)){
-    const variants=[c.name,key].filter(Boolean);
-    let pos=Infinity;
-    for(const v of variants){const i=norm(s).indexOf(norm(v));if(i>=0&&i<pos)pos=i;}
-    if(pos<Infinity && c.iata!==req.originIata) known.push({...c,id:c.iata,_pos:pos});
+    // Busca aberta: o próprio Google Travel devolve destinos de vários países, sem depender de uma lista fixa.
+    try{
+      const params={engine:"google_travel_explore",departure_id:req.originIata,month:req.month,travel_duration:req.days<=4?1:req.days<=10?2:3,travel_class:1,currency:"BRL",gl:"br",hl:"pt"}; if(req.region==="europe") params.arrival_area_id="/m/02j9z"; const data=await serp(params);
+      const found=(data?.destinations||[]).map(d=>({id:d.destination_id||d.id,name:d.name,country:d.country||"",iata:d.destination_id||d.id,tags:["discover"]})).filter(x=>x.id&&x.name);
+      return uniqueById(found);
+    }catch(e){return [];}
   }
-  known.sort((a,b)=>a._pos-b._pos);
-  const ordered=known.map(({_pos,...c})=>c);
-  if(ordered.length>=2) return uniqueById(ordered).slice(0,6);
 
-  // Para cidades não cadastradas, tenta o autocomplete individualmente.
-  const chunks=[];
-  const re=/(?:conhecer|visitar|passar por|parar em|ir para|viajar para)\s+([^.!?]+)/gi;let m;
-  while((m=re.exec(s))) chunks.push(m[1]);
-  const candidates=[];
-  for(const chunk of chunks){
-    const clean=chunk.replace(/\b(em|no|na|por|durante|depois|antes|com|moro|saindo|partindo|e)\b.*$/i,"");
-    const parts=clean.split(/,|\s+e\s+|\s+ou\s+/i).map(x=>x.replace(/^a\s+/i,"").trim()).filter(x=>x.length>=3&&x.length<=45);
-    for(const part of parts){
-      const n=norm(part); if(monthWord(n)||/^\d+/.test(n)||/^(italia|franca|espanha|portugal|belgica|alemanha|europa|brasil|argentina|uruguai|chile)$/i.test(n))continue;
-      if(ordered.some(k=>norm(k.name)===n))continue;
-      try{const c=await autocompleteCity(part);if(c)candidates.push({...c,id:c.iata});}catch(e){}
+  async function resolveExplicit(req,text){
+    const s=String(text||"");
+    // Preserva a ordem em que as cidades aparecem no pedido do usuário.
+    const known=[];
+    for(const [key,c] of Object.entries(cities)){
+      const variants=[c.name,key].filter(Boolean);
+      let pos=Infinity;
+      for(const v of variants){const i=norm(s).indexOf(norm(v));if(i>=0&&i<pos)pos=i;}
+      if(pos<Infinity && c.iata!==req.originIata) known.push({...c,id:c.iata,_pos:pos});
     }
+    known.sort((a,b)=>a._pos-b._pos);
+    const ordered=known.map(({_pos,...c})=>c);
+    if(ordered.length>=2) return uniqueById(ordered).slice(0,6);
+
+    // Para cidades não cadastradas, tenta o autocomplete individualmente.
+    const chunks=[];
+    const re=/(?:conhecer|visitar|passar por|parar em|ir para|viajar para)\s+([^.!?]+)/gi;let m;
+    while((m=re.exec(s))) chunks.push(m[1]);
+    const candidates=[];
+    for(const chunk of chunks){
+      const clean=chunk.replace(/\b(em|no|na|por|durante|depois|antes|com|moro|saindo|partindo|e)\b.*$/i,"");
+      const parts=clean.split(/,|\s+e\s+|\s+ou\s+/i).map(x=>x.replace(/^a\s+/i,"").trim()).filter(x=>x.length>=3&&x.length<=45);
+      for(const part of parts){
+        const n=norm(part); if(monthWord(n)||/^\d+/.test(n)||/^(italia|franca|espanha|portugal|belgica|alemanha|europa|brasil|argentina|uruguai|chile)$/i.test(n))continue;
+        if(ordered.some(k=>norm(k.name)===n))continue;
+        try{const c=await autocompleteCity(part);if(c)candidates.push({...c,id:c.iata});}catch(e){}
+      }
+    }
+    return uniqueById([...ordered,...candidates]).slice(0,6);
   }
-  return uniqueById([...ordered,...candidates]).slice(0,6);
-}
+
 function monthWord(s){return /^(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)$/.test(s);}
 
-async function realFlight(origin,dest,start,end,people,adults,children,timePreference=null){
+async function realFlightSerp(origin,dest,start,end,people,adults,children,timePreference=null){
   const arrival=flightSearchId(dest);
   const base={engine:"google_flights",departure_id:origin,arrival_id:arrival,outbound_date:start,return_date:end,type:1,travel_class:1,adults:adults||people,children:children||0,currency:"BRL",gl:"br",hl:"pt",deep_search:false};
   const run=async(withTime)=>{const p={...base};if(withTime&&timePreference)p.outbound_times=`${timePreference.start},${timePreference.end}`;return serp(p);};
@@ -583,7 +681,7 @@ async function realFlight(origin,dest,start,end,people,adults,children,timePrefe
   const o=options[0];if(!o)return null;const first=o.flights?.[0];
   return {amount:Number(o.price),carrier:first?.airline||"Companhia aérea",logo:first?.airline_logo||null,duration:o.total_duration||null,bookingToken:o.booking_token||null,preferredTimeMatched:usedPreferred,googleLink:`https://www.google.com/travel/flights?hl=pt-BR&curr=BRL&q=${encodeURIComponent(`${origin} ${arrival} ${start} ${end}`)}`};
 }
-async function realOneWayFlight(origin,dest,start,people,adults,children,timePreference=null){
+async function realOneWayFlightSerp(origin,dest,start,people,adults,children,timePreference=null){
   const arrival=flightSearchId(dest);
   const base={engine:"google_flights",departure_id:origin,arrival_id:arrival,outbound_date:start,type:2,travel_class:1,adults:adults||people,children:children||0,currency:"BRL",gl:"br",hl:"pt",deep_search:false,sort_by:2};
   const run=async(withTime)=>{
@@ -600,6 +698,29 @@ async function realOneWayFlight(origin,dest,start,people,adults,children,timePre
   }
   const o=options[0];if(!o)return null;const first=o.flights?.[0];
   return {amount:Number(o.price),carrier:first?.airline||"Companhia aérea",logo:first?.airline_logo||null,duration:o.total_duration||null,bookingToken:o.booking_token||null,departureTime:first?.departure_airport?.time||null,arrivalTime:first?.arrival_airport?.time||null,preferredTimeMatched:usedPreferred,googleLink:`https://www.google.com/travel/flights?hl=pt-BR&curr=BRL&q=${encodeURIComponent(`${origin} ${arrival} ${start}`)}`};
+}
+
+async function realFlight(origin,dest,start,end,people,adults,children,timePreference=null){
+  try{
+    const serpResult=await realFlightSerp(origin,dest,start,end,people,adults,children,timePreference);
+    if(serpResult) return serpResult;
+    if(process.env.TRAVELPAYOUTS_API_TOKEN){const tp=await travelpayoutsFlight(origin,dest,start,end,people,adults,children,timePreference,false);if(tp)return tp;}
+    return null;
+  }catch(e){
+    if(process.env.TRAVELPAYOUTS_API_TOKEN){const tp=await travelpayoutsFlight(origin,dest,start,end,people,adults,children,timePreference,false);if(tp)return tp;}
+    throw e;
+  }
+}
+async function realOneWayFlight(origin,dest,start,people,adults,children,timePreference=null){
+  try{
+    const serpResult=await realOneWayFlightSerp(origin,dest,start,people,adults,children,timePreference);
+    if(serpResult) return serpResult;
+    if(process.env.TRAVELPAYOUTS_API_TOKEN){const tp=await travelpayoutsFlight(origin,dest,start,null,people,adults,children,timePreference,true);if(tp)return tp;}
+    return null;
+  }catch(e){
+    if(process.env.TRAVELPAYOUTS_API_TOKEN){const tp=await travelpayoutsFlight(origin,dest,start,null,people,adults,children,timePreference,true);if(tp)return tp;}
+    throw e;
+  }
 }
 
 async function realHotel(dest,start,end,people,children){
@@ -831,6 +952,7 @@ async function handler(event){
         ok:true,
         serpApiConfigured:Boolean(process.env.SERPAPI_KEY),
         geminiConfigured:Boolean(process.env.GEMINI_API_KEY||process.env.GEMINI_KEY),
+        travelpayoutsConfigured:Boolean(process.env.TRAVELPAYOUTS_API_TOKEN),
         environment:"production-runtime",
         timestamp:new Date().toISOString()
       };
@@ -839,6 +961,12 @@ async function handler(event){
           const data=await serp({engine:"google_flights",departure_id:"CGR",arrival_id:"GRU",outbound_date:"2027-05-15",return_date:"2027-05-18",type:1,travel_class:1,adults:1,currency:"BRL",gl:"br",hl:"pt"});
           out.serpApiTest={ok:true,hasResults:Boolean((data?.best_flights||[]).length||(data?.other_flights||[]).length),searchMetadata:data?.search_metadata?.status||null};
         } catch(e) { out.serpApiTest={ok:false,error:safeError(e),code:e?.code||null,httpStatus:e?.httpStatus||null}; }
+      }
+      if(q.test==="1" && process.env.TRAVELPAYOUTS_API_TOKEN){
+        try{
+          const tp=await travelpayoutsFlight("CGR",{iata:"GRU",id:"GRU",name:"São Paulo",country:"Brasil"},"2026-10-15","2026-10-18",1,1,0,null,false);
+          out.travelpayoutsTest={ok:Boolean(tp),hasResult:Boolean(tp),source:tp?.source||null,cachedPrice:tp?.cachedPrice??null};
+        }catch(e){out.travelpayoutsTest={ok:false,error:safeError(e),code:e?.code||null,httpStatus:e?.httpStatus||null};}
       }
       return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify(out)};
     }
