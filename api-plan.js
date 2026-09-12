@@ -455,9 +455,27 @@ function dateOptions(req){
 }
 
 async function serp(params){
-  if(!process.env.SERPAPI_KEY) return null;
-  const url=new URL("https://serpapi.com/search.json");Object.entries({...params,api_key:process.env.SERPAPI_KEY}).forEach(([k,v])=>url.searchParams.set(k,String(v)));
-  const r=await fetch(url,{headers:{Accept:"application/json"}});const data=await r.json();if(!r.ok||data.error)throw new Error(data.error||`SerpApi ${r.status}`);return data;
+  const key=process.env.SERPAPI_KEY;
+  if(!key) { const e=new Error("SERPAPI_KEY ausente no ambiente desta função"); e.code="SERPAPI_KEY_MISSING"; throw e; }
+  const url=new URL("https://serpapi.com/search.json");
+  Object.entries({...params,api_key:key}).forEach(([k,v])=>url.searchParams.set(k,String(v)));
+  const r=await fetch(url,{headers:{Accept:"application/json"}});
+  let data=null;
+  try{ data=await r.json(); }catch(e){ data=null; }
+  if(!r.ok||data?.error){
+    const msg=String(data?.error||`SerpApi HTTP ${r.status}`);
+    const e=new Error(msg);
+    e.code=data?.error_code||`SERPAPI_HTTP_${r.status}`;
+    e.httpStatus=r.status;
+    throw e;
+  }
+  return data;
+}
+
+function safeError(e){
+  if(!e) return null;
+  const msg=String(e.message||e);
+  return msg.length>240?msg.slice(0,240):msg;
 }
 
 async function autocompleteCity(query){
@@ -792,6 +810,26 @@ function conversationalFallback(req,text){
 
 const recentChatRequests=new Map();
 async function handler(event){
+  if(event.httpMethod==="GET") {
+    const q=event.queryStringParameters||{};
+    if(q.diagnostic==="1") {
+      const out={
+        ok:true,
+        serpApiConfigured:Boolean(process.env.SERPAPI_KEY),
+        geminiConfigured:Boolean(process.env.GEMINI_API_KEY||process.env.GEMINI_KEY),
+        environment:"production-runtime",
+        timestamp:new Date().toISOString()
+      };
+      if(q.test==="1" && process.env.SERPAPI_KEY){
+        try {
+          const data=await serp({engine:"google_flights",departure_id:"CGR",arrival_id:"GRU",outbound_date:"2027-05-15",return_date:"2027-05-18",type:1,travel_class:1,adults:1,currency:"BRL",gl:"br",hl:"pt"});
+          out.serpApiTest={ok:true,hasResults:Boolean((data?.best_flights||[]).length||(data?.other_flights||[]).length),searchMetadata:data?.search_metadata?.status||null};
+        } catch(e) { out.serpApiTest={ok:false,error:safeError(e),code:e?.code||null,httpStatus:e?.httpStatus||null}; }
+      }
+      return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify(out)};
+    }
+    return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({ok:true,service:"VOAÍ API"})};
+  }
   if(event.httpMethod!=="POST")return {statusCode:405,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:"Método não permitido"})};
   try{
     const body=JSON.parse(event.body||"{}");
@@ -840,7 +878,7 @@ async function handler(event){
     let req=parseRequest(body.text,body.origin,body.people);const ai=await geminiUnderstand(body.text,body.origin,body.people);req=await applyAI(req,ai,body.text);const dates=dateOptions(req);
     // No planejamento principal, nunca mostramos preços inventados.
     // Sem uma fonte de preços ao vivo, o resultado deve ser explicitamente indisponível.
-    if(!process.env.SERPAPI_KEY)return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"unavailable",reason:"live_search_unavailable",parsed:req,results:[]})};
+    if(!process.env.SERPAPI_KEY)return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"unavailable",reason:"live_search_unavailable",diagnostic:"SERPAPI_KEY_MISSING",parsed:req,results:[]})};
 
     // Se o parser já encontrou duas ou mais cidades conhecidas, preserve exatamente essa ordem.
     // Não fazemos um novo autocomplete do trecho inteiro, pois isso pode transformar o nome de um país
@@ -967,7 +1005,7 @@ async function handler(event){
       return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"unavailable",reason:"no_live_results",parsed:{...req,candidateCount:candidates.length},results:[]})};
     }
     return {statusCode:200,headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:"live",parsed:{...req,candidateCount:candidates.length},results:results.slice(0,10)})};
-  }catch(e){return {statusCode:500,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:e.message||"Erro ao pesquisar"})};}
+  }catch(e){return {statusCode:500,headers:{"Content-Type":"application/json"},body:JSON.stringify({error:e.message||"Erro ao pesquisar",diagnostic:e?.code||null})};}
 };
 
 // Adaptador para Vercel Node Functions. O restante da lógica usa o formato
